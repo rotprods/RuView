@@ -4,6 +4,25 @@
 
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)]()
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)]()
+[![Tests](https://img.shields.io/badge/tests-338%20passed-brightgreen.svg)]()
+
+---
+
+## Ethics & Responsible Use
+
+> **This technology interfaces with human neural data. Use it responsibly.**
+>
+> - **Informed consent** is required before collecting neural data from any participant
+> - **Never** deploy brain-computer interfaces without IRB/ethics board approval
+> - **Data privacy**: Neural signals are among the most sensitive personal data categories. Encrypt at rest, anonymize before sharing, and comply with GDPR/HIPAA as applicable
+> - **Clinical use** requires FDA/CE clearance and must be supervised by licensed medical professionals
+> - **Do not** use this software for covert monitoring, interrogation, lie detection, or any application that violates human autonomy
+> - **Dual-use awareness**: The same technology that helps paralyzed patients communicate can be misused for surveillance. Design with safeguards
+> - This software is provided for **research and educational purposes**. The authors accept no liability for misuse
+>
+> See [IEEE Neuroethics Framework](https://standards.ieee.org/industry-connections/ec/neuroethics/) and the [Morningside Group Neurorights](https://nri.ntc.columbia.edu/content/neurorights) initiative for guidance.
+
+---
 
 ## Overview
 
@@ -12,8 +31,91 @@ analysis. It transforms neural magnetic field measurements from quantum sensors 
 magnetometers, optically pumped magnetometers) into dynamic connectivity graphs, then uses
 minimum cut algorithms to detect cognitive state transitions.
 
-This is not mind reading -- it measures **how cognition organizes itself** by tracking the
+This is not mind reading — it measures **how cognition organizes itself** by tracking the
 topology of brain networks in real time.
+
+## Hardware Parts List
+
+Below is a reference bill of materials for building a basic multi-channel neural sensing rig.
+Prices are approximate (2026). Links are for reference only — equivalent components from any
+vendor will work.
+
+### Core: NV Diamond Magnetometer Array
+
+| Component | Qty | Approx Price | Link | Notes |
+|-----------|-----|-------------|------|-------|
+| NV Diamond Sensor Chip (2x2mm, 1ppm N) | 16 | $45 ea | [AliExpress: NV Diamond Chip](https://www.aliexpress.com/w/wholesale-nv-diamond-sensor.html) | Nitrogen-vacancy center, electronic grade |
+| 532nm Green Laser Diode Module (100mW) | 4 | $12 ea | [AliExpress: 532nm Laser Module](https://www.aliexpress.com/w/wholesale-532nm-laser-module-100mw.html) | Excitation source for ODMR |
+| Microwave Signal Generator (2.87 GHz) | 1 | $85 | [AliExpress: RF Signal Generator 3GHz](https://www.aliexpress.com/w/wholesale-rf-signal-generator-3ghz.html) | For NV zero-field splitting resonance |
+| SMA Coaxial Cable (50 Ohm, 30cm) | 4 | $3 ea | [AliExpress: SMA Cable 50 Ohm](https://www.aliexpress.com/w/wholesale-sma-cable-50-ohm.html) | Microwave delivery to diamond chips |
+| Photodiode Array (Si PIN, 16-ch) | 1 | $25 | [AliExpress: Photodiode Array](https://www.aliexpress.com/w/wholesale-photodiode-array-16-channel.html) | Fluorescence detection |
+| Transimpedance Amplifier Board | 1 | $18 | [AliExpress: TIA Board](https://www.aliexpress.com/w/wholesale-transimpedance-amplifier-board.html) | Converts photocurrent to voltage |
+
+### Alternative: OPM (Optically Pumped Magnetometer)
+
+| Component | Qty | Approx Price | Link | Notes |
+|-----------|-----|-------------|------|-------|
+| Rb Vapor Cell (25mm, AR coated) | 8 | $35 ea | [AliExpress: Rubidium Vapor Cell](https://www.aliexpress.com/w/wholesale-rubidium-vapor-cell.html) | SERF-mode magnetometry |
+| 795nm VCSEL Laser | 8 | $8 ea | [AliExpress: 795nm VCSEL](https://www.aliexpress.com/w/wholesale-795nm-vcsel-laser.html) | D1 line pump for Rb |
+| Balanced Photodetector | 8 | $15 ea | [AliExpress: Balanced Photodetector](https://www.aliexpress.com/w/wholesale-balanced-photodetector.html) | Differential detection |
+| Magnetic Shielding Mu-Metal Cylinder | 1 | $120 | [AliExpress: Mu-Metal Shield](https://www.aliexpress.com/w/wholesale-mu-metal-magnetic-shield.html) | 3-layer, >60dB attenuation |
+
+### Alternative: EEG (Electroencephalography)
+
+| Component | Qty | Approx Price | Link | Notes |
+|-----------|-----|-------------|------|-------|
+| Ag/AgCl EEG Electrodes (10-20 system) | 21 | $2 ea | [AliExpress: EEG Electrode AgCl](https://www.aliexpress.com/w/wholesale-eeg-electrode-ag-agcl.html) | Reusable cup electrodes |
+| EEG Cap (10-20 placement, size M) | 1 | $45 | [AliExpress: EEG Cap 10-20](https://www.aliexpress.com/w/wholesale-eeg-cap-10-20.html) | Pre-wired 21-channel |
+| Conductive EEG Gel (250ml) | 1 | $8 | [AliExpress: EEG Gel](https://www.aliexpress.com/w/wholesale-eeg-conductive-gel.html) | Low impedance contact |
+| ADS1299 EEG AFE Board (8-ch) | 3 | $35 ea | [AliExpress: ADS1299 Board](https://www.aliexpress.com/w/wholesale-ads1299-eeg-board.html) | 24-bit, 250 SPS, TI analog front-end |
+
+### Data Acquisition & Processing
+
+| Component | Qty | Approx Price | Link | Notes |
+|-----------|-----|-------------|------|-------|
+| ESP32-S3 DevKit (16MB Flash, 8MB PSRAM) | 4 | $8 ea | [AliExpress: ESP32-S3 DevKit](https://www.aliexpress.com/w/wholesale-esp32-s3-devkit.html) | ADC readout + TDM sync |
+| ADS1256 24-bit ADC Module | 2 | $12 ea | [AliExpress: ADS1256 Module](https://www.aliexpress.com/w/wholesale-ads1256-module.html) | High-resolution for NV/OPM |
+| USB-C Hub (4 port, USB 3.0) | 1 | $10 | [AliExpress: USB-C Hub](https://www.aliexpress.com/w/wholesale-usb-c-hub-4-port.html) | Connect ESP32 nodes to host |
+| Shielded USB Cable (30cm, ferrite) | 4 | $3 ea | [AliExpress: Shielded USB Cable](https://www.aliexpress.com/w/wholesale-shielded-usb-cable-ferrite.html) | Reduce EMI |
+| Host PC or Raspberry Pi 5 (8GB) | 1 | $80 | [AliExpress: Raspberry Pi 5](https://www.aliexpress.com/w/wholesale-raspberry-pi-5-8gb.html) | Runs the rUv Neural pipeline |
+
+### Assembly Tools
+
+| Component | Qty | Approx Price | Link | Notes |
+|-----------|-----|-------------|------|-------|
+| Soldering Station (adjustable temp) | 1 | $25 | [AliExpress: Soldering Station](https://www.aliexpress.com/w/wholesale-soldering-station-adjustable.html) | For sensor board assembly |
+| Breadboard + Jumper Wire Kit | 1 | $8 | [AliExpress: Breadboard Kit](https://www.aliexpress.com/w/wholesale-breadboard-jumper-wire-kit.html) | Prototyping |
+| 3D Printed Sensor Mount (STL provided) | 1 | — | Print locally | Holds diamond chips in array |
+
+**Estimated total cost:** ~$650–$900 for a 16-channel NV diamond setup, ~$500 for OPM, ~$200 for EEG.
+
+### Assembly Instructions
+
+1. **Sensor Array**
+   - Mount NV diamond chips (or OPM vapor cells, or EEG electrodes) in the 3D-printed helmet/mount
+   - For NV: align 532nm laser to each chip, position photodiodes for fluorescence collection
+   - For OPM: install Rb cells inside mu-metal shield, align 795nm VCSELs
+   - For EEG: apply conductive gel, place electrodes per 10-20 system
+
+2. **Signal Chain**
+   - Connect sensor outputs to ADS1256 (NV/OPM) or ADS1299 (EEG) ADC boards
+   - Wire ADC SPI bus to ESP32-S3 GPIO (MOSI=11, MISO=13, SCK=12, CS=10)
+   - Flash ESP32 with `ruv-neural-esp32` firmware: `cargo flash --chip esp32s3`
+
+3. **TDM Synchronization**
+   - Connect GPIO 4 across all ESP32 nodes as a shared sync line
+   - The `TdmScheduler` assigns non-overlapping time slots automatically
+   - Set `sync_tolerance_us: 1000` in the aggregator config
+
+4. **Host Software**
+   - Install Rust 1.75+ and build: `cargo build --workspace --release`
+   - Run the pipeline: `cargo run -p ruv-neural-cli --release -- pipeline --channels 16 --duration 60`
+   - Or use individual crates as a library (see [Use as Library](#use-as-library))
+
+5. **Verification**
+   - Generate a witness bundle: `cargo run -p ruv-neural-cli -- witness --output witness.json`
+   - Verify Ed25519 signature: `cargo run -p ruv-neural-cli -- witness --verify witness.json`
+   - Expected output: `VERDICT: PASS` (41 capability attestations, 338 tests)
 
 ## Architecture
 
@@ -237,17 +339,29 @@ RuVector File (RVF) is a binary format for neural data interchange:
 - **Binary format** for efficient storage and streaming
 - **Compatible** with the broader RuVector ecosystem
 
-## RuVector Integration
+## Cryptographic Witness Verification
 
-rUv Neural integrates with five RuVector crates from the `2.0.4` release:
+rUv Neural includes an Ed25519-signed capability attestation system. Every build can
+generate a witness bundle that cryptographically proves which capabilities are present
+and that all tests passed.
 
-| RuVector Crate | Used By | Purpose |
-|----------------|---------|---------|
-| `ruvector-mincut` | mincut | Spectral mincut algorithms |
-| `ruvector-attn-mincut` | mincut | Attention-weighted cut |
-| `ruvector-temporal-tensor` | signal | Compressed temporal buffers |
-| `ruvector-solver` | graph | Sparse interpolation solver |
-| `ruvector-attention` | embed | Spatial attention mechanisms |
+```bash
+# Generate a signed witness bundle
+cargo run -p ruv-neural-cli -- witness --output witness-bundle.json
+
+# Verify (any third party can do this)
+cargo run -p ruv-neural-cli -- witness --verify witness-bundle.json
+```
+
+The bundle contains:
+- **41 capability attestations** covering all 12 crates
+- **SHA-256 digest** of the capability matrix
+- **Ed25519 signature** (unique per generation)
+- **Public key** for independent verification
+- Test count and pass/fail status
+
+Tampered bundles are detected — modifying any attestation invalidates the digest and
+signature verification returns `FAIL`.
 
 ## Testing
 

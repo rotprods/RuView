@@ -158,7 +158,7 @@ mod tests {
         let p1 = make_packet(1, 1000, vec![40, 50, 60]);
 
         agg.receive_packet(0, p0).unwrap();
-        // Not yet complete
+        // Only one node has reported — assembly requires all nodes
         assert!(agg.try_assemble().is_none());
 
         agg.receive_packet(1, p1).unwrap();

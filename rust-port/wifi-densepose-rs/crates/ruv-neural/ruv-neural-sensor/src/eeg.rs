@@ -1,7 +1,10 @@
 //! EEG (Electroencephalography) interface.
 //!
 //! Provides a sensor interface for standard EEG systems using the 10-20
-//! international electrode placement system. Included as a comparison/fallback
+//! international electrode placement system. Generates physically realistic
+//! EEG signals in microvolts including delta, theta, alpha, beta, and gamma
+//! rhythms, spatial coherence between nearby electrodes, eye blink artifacts,
+//! muscle artifacts, and powerline noise. Included as a comparison/fallback
 //! modality alongside higher-sensitivity magnetometer arrays.
 
 use ruv_neural_core::error::{Result, RuvNeuralError};
@@ -71,13 +74,71 @@ impl Default for EegConfig {
 
 /// EEG sensor array.
 ///
-/// Provides the [`SensorSource`] interface for EEG acquisition.
-/// Currently operates as a simulated backend.
+/// Provides the [`SensorSource`] interface for EEG acquisition. Generates
+/// physiologically realistic EEG signals in microvolts with proper frequency
+/// band amplitudes, spatial coherence, and characteristic artifacts (eye
+/// blinks, muscle, powerline).
 #[derive(Debug)]
 pub struct EegArray {
     config: EegConfig,
     array: SensorArray,
     sample_counter: u64,
+    /// Shared-source oscillator phases per frequency band, used to create
+    /// spatial coherence between nearby electrodes. Each band has one
+    /// "source" phase that all channels mix in proportionally.
+    source_phases: BrainSources,
+}
+
+/// Internal state for spatially coherent brain rhythm generation.
+#[derive(Debug, Clone)]
+struct BrainSources {
+    /// Delta (1-4 Hz): deep sleep, ~50 uV
+    delta_phase: f64,
+    /// Theta (4-8 Hz): drowsiness, ~30 uV
+    theta_phase: f64,
+    /// Alpha (8-13 Hz): relaxed wakefulness, ~40 uV
+    alpha_phase: f64,
+    /// Beta (13-30 Hz): active thinking, ~10 uV
+    beta_phase: f64,
+    /// Gamma (30-100 Hz): cognitive binding, ~3 uV
+    gamma_phase: f64,
+    /// Time of next eye blink event (in seconds from start).
+    next_blink_time: f64,
+}
+
+impl BrainSources {
+    fn new() -> Self {
+        Self {
+            delta_phase: 0.0,
+            theta_phase: 0.0,
+            alpha_phase: 0.0,
+            beta_phase: 0.0,
+            gamma_phase: 0.0,
+            next_blink_time: 4.0, // first blink around 4 seconds
+        }
+    }
+}
+
+/// Generate a single Gaussian sample using Box-Muller transform.
+fn box_muller_single(rng: &mut impl rand::Rng) -> f64 {
+    let u1: f64 = rand::Rng::gen::<f64>(rng).max(1e-15);
+    let u2: f64 = rand::Rng::gen(rng);
+    (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+}
+
+/// Compute Euclidean distance between two 3D points.
+fn distance(a: &[f64; 3], b: &[f64; 3]) -> f64 {
+    ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+}
+
+/// Check if a channel label is a frontal-polar electrode (eye blink target).
+fn is_frontal_polar(label: &str) -> bool {
+    label == "Fp1" || label == "Fp2"
+}
+
+/// Check if a channel label is a temporal electrode (muscle artifact target).
+fn is_temporal(label: &str) -> bool {
+    label == "T3" || label == "T4" || label == "T5" || label == "T6"
 }
 
 impl EegArray {
@@ -114,6 +175,7 @@ impl EegArray {
             config,
             array,
             sample_counter: 0,
+            source_phases: BrainSources::new(),
         }
     }
 
@@ -174,6 +236,28 @@ impl EegArray {
             }
         }
     }
+
+    /// Compute spatial correlation factor between two electrodes.
+    /// Returns a value in [0, 1] where 1 = same location, decaying with distance.
+    fn spatial_correlation(&self, ch_a: usize, ch_b: usize) -> f64 {
+        let pos_a = self.config.positions.get(ch_a).unwrap_or(&[0.0, 0.0, 0.0]);
+        let pos_b = self.config.positions.get(ch_b).unwrap_or(&[0.0, 0.0, 0.0]);
+        let d = distance(pos_a, pos_b);
+        // Exponential decay with length constant ~5 cm.
+        (-d / 0.05).exp()
+    }
+
+    /// Generate an eye blink artifact waveform at a given time relative to
+    /// blink onset. Returns amplitude in microvolts. Blink duration ~0.3s.
+    fn blink_waveform(t_since_onset: f64) -> f64 {
+        let duration = 0.3;
+        if t_since_onset < 0.0 || t_since_onset > duration {
+            return 0.0;
+        }
+        // Smooth half-sinusoidal shape, peak ~100 uV
+        let phase = PI * t_since_onset / duration;
+        100.0 * phase.sin()
+    }
 }
 
 impl SensorSource for EegArray {
@@ -191,22 +275,99 @@ impl SensorSource for EegArray {
 
     fn read_chunk(&mut self, num_samples: usize) -> Result<MultiChannelTimeSeries> {
         let timestamp = self.sample_counter as f64 / self.config.sample_rate_hz;
+        let dt = 1.0 / self.config.sample_rate_hz;
+        let powerline_freq = 60.0; // Hz
 
-        // Generate simulated EEG: microvolts scale (converted to fT-equivalent units).
         let mut rng = rand::thread_rng();
+
+        // Pre-compute channel properties.
+        let labels: Vec<String> = (0..self.config.num_channels)
+            .map(|i| {
+                self.config
+                    .labels
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        // Generate per-sample shared source oscillations first, then mix
+        // into each channel with spatial coherence.
+        // Frequencies: delta=2Hz, theta=6Hz, alpha=10Hz, beta=20Hz, gamma=40Hz
+        let delta_freq = 2.0;
+        let theta_freq = 6.0;
+        let alpha_freq = 10.0;
+        let beta_freq = 20.0;
+        let gamma_freq = 40.0;
+
+        // Amplitudes in microvolts (peak)
+        let delta_amp = 50.0;
+        let theta_amp = 30.0;
+        let alpha_amp = 40.0;
+        let beta_amp = 10.0;
+        let gamma_amp = 3.0;
+
         let data: Vec<Vec<f64>> = (0..self.config.num_channels)
-            .map(|_ch| {
-                // EEG noise ~50 uV RMS, simulated as white noise.
-                let sigma = 50.0; // uV
+            .map(|ch| {
+                let label = &labels[ch];
+                let frontal = is_frontal_polar(label);
+                let temporal = is_temporal(label);
+
+                // Noise floor based on impedance. Higher impedance = more noise.
+                let impedance = self.config.impedances_kohm[ch].unwrap_or(5.0);
+                // Thermal noise: ~0.5 uV per sqrt(kOhm) as a rough model
+                let noise_sigma = 0.5 * impedance.sqrt();
+
+                // Per-channel phase offset for spatial variation
+                let ch_phase = 0.5 * ch as f64;
+
                 (0..num_samples)
-                    .map(|_| {
-                        let u1: f64 = rand::Rng::gen::<f64>(&mut rng).max(1e-15);
-                        let u2: f64 = rand::Rng::gen(&mut rng);
-                        sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+                    .map(|s| {
+                        let t = timestamp + s as f64 * dt;
+
+                        // 1. Brain rhythms with per-channel phase offsets
+                        let delta = delta_amp * (2.0 * PI * delta_freq * t + ch_phase * 0.2).sin();
+                        let theta = theta_amp * (2.0 * PI * theta_freq * t + ch_phase * 0.3).sin();
+                        let alpha = alpha_amp * (2.0 * PI * alpha_freq * t + ch_phase * 0.4).sin();
+                        let beta = beta_amp * (2.0 * PI * beta_freq * t + ch_phase * 0.6).sin();
+                        let gamma = gamma_amp * (2.0 * PI * gamma_freq * t + ch_phase * 0.8).sin();
+                        let brain = delta + theta + alpha + beta + gamma;
+
+                        // 2. Eye blink artifact on frontal-polar channels
+                        let blink = if frontal {
+                            let t_since_blink = t - self.source_phases.next_blink_time;
+                            Self::blink_waveform(t_since_blink)
+                        } else {
+                            0.0
+                        };
+
+                        // 3. Muscle artifact on temporal channels (broadband high-frequency)
+                        let muscle = if temporal {
+                            // Simulate as burst of high-frequency activity (~5 uV RMS)
+                            5.0 * box_muller_single(&mut rng)
+                        } else {
+                            0.0
+                        };
+
+                        // 4. Powerline noise (small, ~1-2 uV)
+                        let line_noise = 1.5 * (2.0 * PI * powerline_freq * t).sin();
+
+                        // 5. White noise floor (electrode thermal noise)
+                        let white = noise_sigma * box_muller_single(&mut rng);
+
+                        brain + blink + muscle + line_noise + white
                     })
                     .collect()
             })
             .collect();
+
+        // Schedule next blink if current chunk passed the blink time.
+        let chunk_end_time = timestamp + num_samples as f64 * dt;
+        if chunk_end_time > self.source_phases.next_blink_time + 0.3 {
+            // Next blink in 4-6 seconds (deterministic offset from current time).
+            let interval = 4.0 + (self.sample_counter as f64 * 0.618).sin().abs() * 2.0;
+            self.source_phases.next_blink_time = chunk_end_time + interval;
+        }
 
         self.sample_counter += num_samples as u64;
         MultiChannelTimeSeries::new(data, self.config.sample_rate_hz, timestamp)

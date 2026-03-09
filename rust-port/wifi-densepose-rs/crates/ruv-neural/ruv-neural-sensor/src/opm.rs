@@ -286,17 +286,45 @@ impl SensorSource for OpmArray {
 
     fn read_chunk(&mut self, num_samples: usize) -> Result<MultiChannelTimeSeries> {
         let timestamp = self.sample_counter as f64 / self.config.sample_rate_hz;
+        let dt = 1.0 / self.config.sample_rate_hz;
+        let powerline_freq = 60.0; // Hz (could be made configurable)
 
         let mut rng = rand::thread_rng();
         let data: Vec<Vec<f64>> = (0..self.config.num_channels)
             .map(|ch| {
                 let sens = self.config.sensitivities.get(ch).copied().unwrap_or(7.0);
-                let sigma = sens * (self.config.sample_rate_hz / 2.0).sqrt();
+                // White noise: sensitivity in fT/sqrt(Hz) -> per-sample sigma
+                let white_sigma = sens * (self.config.sample_rate_hz / 2.0).sqrt();
+                let scale = sens / 7.0; // normalized to default sensitivity
+                let shielding = self.config.active_shielding_coeffs
+                    .get(ch).copied().unwrap_or(1.0);
+
                 (0..num_samples)
-                    .map(|_| {
+                    .map(|s| {
+                        let t = timestamp + s as f64 * dt;
+
+                        // 1. Brain signal: alpha + beta + gamma neural oscillations
+                        let alpha = 50.0 * scale * (2.0 * PI * 10.0 * t + 0.3 * ch as f64).sin();
+                        let beta = 20.0 * scale * (2.0 * PI * 20.0 * t + 0.7 * ch as f64).sin();
+                        let gamma = 5.0 * scale * (2.0 * PI * 40.0 * t + 1.1 * ch as f64).sin();
+                        let brain = alpha + beta + gamma;
+
+                        // 2. Powerline harmonics (50/60 Hz + 2nd/3rd harmonics)
+                        // Active shielding attenuates environmental interference.
+                        // A shielding coeff of 1.0 means "fully compensated" (no residual).
+                        // Values < 1.0 leave residual interference.
+                        let residual = (1.0 - shielding.clamp(0.0, 1.0)).max(0.0);
+                        let powerline = 500.0 * residual
+                            * ((2.0 * PI * powerline_freq * t).sin()
+                                + 0.3 * (2.0 * PI * 2.0 * powerline_freq * t).sin()
+                                + 0.1 * (2.0 * PI * 3.0 * powerline_freq * t).sin());
+
+                        // 3. White noise floor (SERF-mode thermal noise)
                         let u1: f64 = rand::Rng::gen::<f64>(&mut rng).max(1e-15);
                         let u2: f64 = rand::Rng::gen(&mut rng);
-                        sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos()
+                        let white = white_sigma * (-2.0 * u1.ln()).sqrt() * (2.0 * PI * u2).cos();
+
+                        brain + powerline + white
                     })
                     .collect()
             })

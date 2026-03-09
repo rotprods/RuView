@@ -81,6 +81,15 @@ enum Commands {
     },
     /// Show system info and capabilities
     Info,
+    /// Generate or verify Ed25519-signed capability witness bundles
+    Witness {
+        /// Output file path for generated witness bundle (JSON)
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Path to a witness bundle to verify
+        #[arg(long)]
+        verify: Option<String>,
+    },
 }
 
 fn init_tracing(verbose: u8) {
@@ -123,6 +132,12 @@ async fn main() {
         Commands::Info => {
             commands::info::run();
             Ok(())
+        }
+        Commands::Witness { output, verify } => {
+            commands::witness::run(
+                output.map(std::path::PathBuf::from),
+                verify.map(std::path::PathBuf::from),
+            )
         }
     };
 

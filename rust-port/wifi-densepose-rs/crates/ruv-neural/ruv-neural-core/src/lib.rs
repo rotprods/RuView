@@ -29,6 +29,7 @@ pub mod sensor;
 pub mod signal;
 pub mod topology;
 pub mod traits;
+pub mod witness;
 
 // Re-export the most commonly used types at crate root.
 pub use brain::{Atlas, BrainRegion, Hemisphere, Lobe, Parcellation};

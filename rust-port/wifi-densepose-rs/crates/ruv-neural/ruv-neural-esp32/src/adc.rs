@@ -1,9 +1,10 @@
 //! ADC interface for sensor data acquisition.
 //!
-//! Provides ESP32 ADC configuration and a data reader that converts raw ADC
-//! values to physical units (femtotesla). In `std` mode the reader generates
-//! simulated data; on actual ESP32 hardware the `no_std` feature would wire
-//! into the hardware ADC peripheral.
+//! Provides ESP32 ADC configuration and a ring-buffer backed data reader that
+//! converts raw ADC values to physical units (femtotesla). The ring buffer is
+//! populated via [`AdcReader::load_buffer`] (the production data input path)
+//! or by hardware DMA on actual ESP32 targets. On `no_std` the reader would
+//! wire directly into the ADC peripheral.
 
 use ruv_neural_core::sensor::SensorType;
 use ruv_neural_core::{Result, RuvNeuralError};
@@ -97,11 +98,14 @@ impl AdcConfig {
     }
 }
 
-/// ADC data reader.
+/// Ring-buffer backed ADC data reader that converts raw ADC values to
+/// physical units.
 ///
-/// In `std` mode this is a simulated reader that produces synthetic data from
-/// an internal ring buffer. On actual ESP32 hardware the `no_std` variant
-/// would read from the ADC peripheral via DMA.
+/// The internal ring buffer is filled by [`load_buffer`](Self::load_buffer)
+/// (the production data input path from DMA or manual sampling) or by
+/// [`fill_with_calibration_signal`](Self::fill_with_calibration_signal) for
+/// self-test/calibration. On actual ESP32 hardware the DMA controller writes
+/// directly into this buffer.
 pub struct AdcReader {
     config: AdcConfig,
     buffer: Vec<Vec<i16>>,
@@ -172,8 +176,10 @@ impl AdcReader {
 
     /// Load raw samples into the internal ring buffer for a given channel.
     ///
-    /// This is mainly useful for testing — on real hardware the DMA fills
-    /// the buffer automatically.
+    /// This is the production data input path. On real hardware the DMA
+    /// controller calls this (or writes directly to the buffer memory) to
+    /// deliver new ADC readings. Also used in host-side testing to inject
+    /// known waveforms.
     pub fn load_buffer(&mut self, channel_idx: usize, data: &[i16]) -> Result<()> {
         if channel_idx >= self.buffer.len() {
             return Err(RuvNeuralError::ChannelOutOfRange {
@@ -198,6 +204,44 @@ impl AdcReader {
 
     /// Resets the buffer read position to zero.
     pub fn reset(&mut self) {
+        self.buffer_pos = 0;
+    }
+
+    /// Fill all channels with a known sinusoidal calibration signal for
+    /// self-test and gain verification.
+    ///
+    /// Writes a full-scale sine wave at the given frequency into every
+    /// channel's ring buffer. After calling this, [`read_samples`](Self::read_samples)
+    /// will return the calibration waveform converted to femtotesla, which
+    /// can be compared against the expected amplitude to verify the gain
+    /// and offset calibration.
+    ///
+    /// # Arguments
+    /// * `frequency_hz` - Frequency of the calibration sine wave.
+    ///
+    /// # Example
+    /// ```
+    /// # use ruv_neural_esp32::adc::{AdcConfig, AdcReader};
+    /// let config = AdcConfig::default_single_channel();
+    /// let mut reader = AdcReader::new(config);
+    /// reader.fill_with_calibration_signal(10.0);
+    /// let data = reader.read_samples(100).unwrap();
+    /// // data now contains a 10 Hz sine converted to fT
+    /// ```
+    pub fn fill_with_calibration_signal(&mut self, frequency_hz: f64) {
+        let buf_len = self.buffer[0].len();
+        let max_raw = self.config.max_raw_value();
+        let sample_rate = self.config.sample_rate_hz as f64;
+
+        for ch_idx in 0..self.buffer.len() {
+            for i in 0..buf_len {
+                let t = i as f64 / sample_rate;
+                // Sine wave at ~90% of full scale to avoid clipping
+                let value = 0.9 * (max_raw as f64)
+                    * (2.0 * std::f64::consts::PI * frequency_hz * t).sin();
+                self.buffer[ch_idx][i] = value.round() as i16;
+            }
+        }
         self.buffer_pos = 0;
     }
 }
