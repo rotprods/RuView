@@ -46,6 +46,11 @@ export function StatusBadge({ status, size = "sm" }: StatusBadgeProps) {
           borderRadius: "50%",
           backgroundColor: color,
           flexShrink: 0,
+          boxShadow: status === "online"
+            ? `0 0 4px ${color}, 0 0 8px ${color}`
+            : status === "degraded"
+              ? `0 0 4px ${color}`
+              : "none",
         }}
       />
       {label}
