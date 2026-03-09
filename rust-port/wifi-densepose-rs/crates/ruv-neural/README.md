@@ -2,6 +2,7 @@
 
 > Quantum sensor integration x RuVector graph memory x Dynamic mincut coherence detection
 
+[![crates.io](https://img.shields.io/crates/v/ruv-neural-core.svg)](https://crates.io/crates/ruv-neural-core)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)]()
 [![Rust](https://img.shields.io/badge/rust-1.75+-orange.svg)]()
 [![Tests](https://img.shields.io/badge/tests-338%20passed-brightgreen.svg)]()
@@ -168,20 +169,22 @@ vendor will work.
 
 ## Crate Map
 
-| Crate | Description | Dependencies |
-|-------|-------------|--------------|
-| `ruv-neural-core` | Core types, traits, errors, RVF format | None |
-| `ruv-neural-sensor` | NV diamond, OPM, EEG sensor interfaces | core |
-| `ruv-neural-signal` | DSP: filtering, spectral, connectivity | core |
-| `ruv-neural-graph` | Brain connectivity graph construction | core, signal |
-| `ruv-neural-mincut` | Dynamic minimum cut topology analysis | core |
-| `ruv-neural-embed` | RuVector graph embeddings | core |
-| `ruv-neural-memory` | Persistent neural state memory + HNSW | core, embed |
-| `ruv-neural-decoder` | Cognitive state classification + BCI | core, embed |
-| `ruv-neural-esp32` | ESP32 edge sensor integration | core |
-| `ruv-neural-wasm` | WebAssembly browser bindings | core |
-| `ruv-neural-viz` | Visualization and ASCII rendering | core, graph |
-| `ruv-neural-cli` | CLI tool (`ruv-neural` binary) | all |
+All crates are published on [crates.io](https://crates.io/search?q=ruv-neural):
+
+| Crate | crates.io | Description | Dependencies |
+|-------|-----------|-------------|--------------|
+| [`ruv-neural-core`](https://crates.io/crates/ruv-neural-core) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-core.svg)](https://crates.io/crates/ruv-neural-core) | Core types, traits, errors, RVF format | None |
+| [`ruv-neural-sensor`](https://crates.io/crates/ruv-neural-sensor) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-sensor.svg)](https://crates.io/crates/ruv-neural-sensor) | NV diamond, OPM, EEG sensor interfaces | core |
+| [`ruv-neural-signal`](https://crates.io/crates/ruv-neural-signal) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-signal.svg)](https://crates.io/crates/ruv-neural-signal) | DSP: filtering, spectral, connectivity | core |
+| [`ruv-neural-graph`](https://crates.io/crates/ruv-neural-graph) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-graph.svg)](https://crates.io/crates/ruv-neural-graph) | Brain connectivity graph construction | core, signal |
+| [`ruv-neural-mincut`](https://crates.io/crates/ruv-neural-mincut) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-mincut.svg)](https://crates.io/crates/ruv-neural-mincut) | Dynamic minimum cut topology analysis | core |
+| [`ruv-neural-embed`](https://crates.io/crates/ruv-neural-embed) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-embed.svg)](https://crates.io/crates/ruv-neural-embed) | RuVector graph embeddings | core |
+| [`ruv-neural-memory`](https://crates.io/crates/ruv-neural-memory) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-memory.svg)](https://crates.io/crates/ruv-neural-memory) | Persistent neural state memory + HNSW | core |
+| [`ruv-neural-decoder`](https://crates.io/crates/ruv-neural-decoder) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-decoder.svg)](https://crates.io/crates/ruv-neural-decoder) | Cognitive state classification + BCI | core |
+| [`ruv-neural-esp32`](https://crates.io/crates/ruv-neural-esp32) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-esp32.svg)](https://crates.io/crates/ruv-neural-esp32) | ESP32 edge sensor integration | core |
+| `ruv-neural-wasm` | — | WebAssembly browser bindings | core |
+| [`ruv-neural-viz`](https://crates.io/crates/ruv-neural-viz) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-viz.svg)](https://crates.io/crates/ruv-neural-viz) | Visualization and ASCII rendering | core, graph, mincut |
+| [`ruv-neural-cli`](https://crates.io/crates/ruv-neural-cli) | [![crates.io](https://img.shields.io/crates/v/ruv-neural-cli.svg)](https://crates.io/crates/ruv-neural-cli) | CLI tool (`ruv-neural` binary) | all |
 
 ## Dependency Graph
 
@@ -222,6 +225,23 @@ cargo test --workspace
 cargo run -p ruv-neural-cli -- simulate --channels 64 --duration 10
 cargo run -p ruv-neural-cli -- pipeline --channels 32 --duration 5 --dashboard
 cargo run -p ruv-neural-cli -- mincut --input brain_graph.json
+```
+
+### Install from crates.io
+
+```bash
+# Add individual crates as needed
+cargo add ruv-neural-core
+cargo add ruv-neural-sensor
+cargo add ruv-neural-signal
+cargo add ruv-neural-mincut
+cargo add ruv-neural-embed
+cargo add ruv-neural-memory
+cargo add ruv-neural-decoder
+cargo add ruv-neural-graph
+cargo add ruv-neural-viz
+cargo add ruv-neural-esp32
+cargo add ruv-neural-cli
 ```
 
 ### Use as Library
