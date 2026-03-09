@@ -171,12 +171,20 @@ mod tests {
             .map(|i| 100.0 * (2.0 * std::f64::consts::PI * 10.0 * i as f64 / 1000.0).sin())
             .collect();
 
-        // Channel 1: mostly noise.
-        let bad_signal: Vec<f64> = (0..1000).map(|i| (i as f64 * 0.001).sin() * 0.01).collect();
+        // Channel 1: high-frequency noise (alternating values = maximum first-difference noise).
+        let bad_signal: Vec<f64> = (0..1000)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
 
         let qualities = monitor.check_quality(&[&good_signal, &bad_signal]);
         assert_eq!(qualities.len(), 2);
-        assert!(qualities[0].snr_db > qualities[1].snr_db);
+        // Smooth sinusoid should have higher SNR than alternating noise.
+        assert!(
+            qualities[0].snr_db > qualities[1].snr_db,
+            "Good SNR ({}) should be > bad SNR ({})",
+            qualities[0].snr_db,
+            qualities[1].snr_db,
+        );
     }
 
     #[test]

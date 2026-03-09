@@ -3,10 +3,12 @@
 //! Extracts a feature vector of hand-crafted topological metrics from a brain graph,
 //! including mincut estimate, modularity, efficiency, degree statistics, and more.
 
+use ruv_neural_core::embedding::NeuralEmbedding;
 use ruv_neural_core::error::Result;
 use ruv_neural_core::graph::BrainGraph;
+use ruv_neural_core::traits::EmbeddingGenerator;
 
-use crate::{EmbeddingGenerator, NeuralEmbedding};
+use crate::default_metadata;
 
 /// Topology-based embedder: converts a brain graph into a vector of topological features.
 pub struct TopologyEmbedder {
@@ -31,7 +33,7 @@ impl TopologyEmbedder {
         }
     }
 
-    /// Estimate global minimum cut via the minimum node degree (Stoer-Wagner lower bound).
+    /// Estimate global minimum cut via the minimum node degree.
     fn estimate_mincut(graph: &BrainGraph) -> f64 {
         if graph.num_nodes < 2 {
             return 0.0;
@@ -42,7 +44,6 @@ impl TopologyEmbedder {
     }
 
     /// Estimate modularity using a simple greedy two-partition.
-    /// This is a simplified Newman modularity approximation.
     fn estimate_modularity(graph: &BrainGraph) -> f64 {
         let n = graph.num_nodes;
         if n < 2 {
@@ -56,7 +57,6 @@ impl TopologyEmbedder {
         let adj = graph.adjacency_matrix();
         let degrees: Vec<f64> = (0..n).map(|i| graph.node_degree(i)).collect();
 
-        // Simple partition: split by median degree
         let mut sorted_degrees: Vec<(usize, f64)> =
             degrees.iter().copied().enumerate().collect();
         sorted_degrees.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
@@ -67,7 +67,6 @@ impl TopologyEmbedder {
             partition[node] = if rank < mid { 1 } else { -1 };
         }
 
-        // Q = (1/2m) * sum_ij [ A_ij - k_i*k_j/(2m) ] * delta(c_i, c_j)
         let two_m = 2.0 * total_weight;
         let mut q = 0.0;
         for i in 0..n {
@@ -81,7 +80,6 @@ impl TopologyEmbedder {
     }
 
     /// Compute global efficiency: average of 1/shortest_path for all node pairs.
-    /// Uses BFS on the unweighted adjacency structure.
     fn global_efficiency(graph: &BrainGraph) -> f64 {
         let n = graph.num_nodes;
         if n < 2 {
@@ -92,7 +90,6 @@ impl TopologyEmbedder {
         let mut sum_inv_dist = 0.0;
 
         for source in 0..n {
-            // BFS from source
             let mut dist = vec![usize::MAX; n];
             dist[source] = 0;
             let mut queue = std::collections::VecDeque::new();
@@ -117,7 +114,7 @@ impl TopologyEmbedder {
         sum_inv_dist / (n * (n - 1)) as f64
     }
 
-    /// Compute mean local efficiency (average efficiency of each node's neighborhood).
+    /// Compute mean local efficiency.
     fn local_efficiency(graph: &BrainGraph) -> f64 {
         let n = graph.num_nodes;
         if n == 0 {
@@ -136,12 +133,11 @@ impl TopologyEmbedder {
                 continue;
             }
 
-            // Efficiency within the subgraph of neighbors
             let mut sub_sum = 0.0;
             for &i in &neighbors {
                 for &j in &neighbors {
                     if i != j && adj[i][j] > 1e-12 {
-                        sub_sum += 1.0; // direct connection -> distance 1
+                        sub_sum += 1.0;
                     }
                 }
             }
@@ -172,7 +168,6 @@ impl TopologyEmbedder {
     }
 
     /// Estimate the Fiedler value (algebraic connectivity).
-    /// Uses simplified power iteration on the Laplacian.
     fn estimate_fiedler(graph: &BrainGraph) -> f64 {
         let n = graph.num_nodes;
         if n < 2 {
@@ -182,7 +177,6 @@ impl TopologyEmbedder {
         let adj = graph.adjacency_matrix();
         let degrees: Vec<f64> = (0..n).map(|i| adj[i].iter().sum::<f64>()).collect();
 
-        // Laplacian: L = D - A
         let mut laplacian = vec![vec![0.0; n]; n];
         for i in 0..n {
             for j in 0..n {
@@ -194,8 +188,6 @@ impl TopologyEmbedder {
             }
         }
 
-        // Use inverse iteration with deflation to find second smallest eigenvalue
-        // First, find the largest eigenvalue for shifting
         let max_eig: f64 = (0..n)
             .map(|i| {
                 let diag = laplacian[i][i];
@@ -207,15 +199,9 @@ impl TopologyEmbedder {
             })
             .fold(0.0_f64, f64::max);
 
-        // Shifted matrix M = max_eig * I - L: largest eigvec of M = smallest eigvec of L
-        // We need the second largest of M (first is trivial constant vector)
-
-        // First eigenvector of M: the constant vector (corresponds to lambda_0 = 0 of L)
         let e0: Vec<f64> = vec![1.0 / (n as f64).sqrt(); n];
 
-        // Power iteration for second eigenvector
         let mut v: Vec<f64> = (0..n).map(|i| ((i + 1) as f64).sin()).collect();
-        // Deflate e0
         let dot0: f64 = v.iter().zip(e0.iter()).map(|(a, b)| a * b).sum();
         for i in 0..n {
             v[i] -= dot0 * e0[i];
@@ -241,7 +227,6 @@ impl TopologyEmbedder {
                 }
             }
 
-            // Deflate
             let dot: f64 = w.iter().zip(e0.iter()).map(|(a, b)| a * b).sum();
             for i in 0..n {
                 w[i] -= dot * e0[i];
@@ -251,18 +236,17 @@ impl TopologyEmbedder {
             if norm < 1e-12 {
                 break;
             }
-            eigenvalue = norm; // This is the eigenvalue of the shifted matrix
+            eigenvalue = norm;
             for x in &mut w {
                 *x /= norm;
             }
             v = w;
         }
 
-        // Fiedler value = max_eig - eigenvalue_of_shifted
         (max_eig - eigenvalue).max(0.0)
     }
 
-    /// Compute clustering coefficient (average over nodes).
+    /// Compute average clustering coefficient.
     fn clustering_coefficient(graph: &BrainGraph) -> f64 {
         let n = graph.num_nodes;
         if n == 0 {
@@ -328,7 +312,7 @@ impl TopologyEmbedder {
     }
 
     /// Generate the topology embedding.
-    pub fn embed(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
+    pub fn embed_graph(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
         let mut values = Vec::new();
 
         if self.include_mincut {
@@ -344,7 +328,6 @@ impl TopologyEmbedder {
             values.push(Self::local_efficiency(graph));
         }
 
-        // Always include these core features
         values.push(Self::graph_entropy(graph));
         values.push(Self::estimate_fiedler(graph));
 
@@ -358,7 +341,8 @@ impl TopologyEmbedder {
                 0.0
             };
             let std_deg = if n > 0 {
-                let var = degrees.iter().map(|d| (d - mean_deg).powi(2)).sum::<f64>() / n as f64;
+                let var =
+                    degrees.iter().map(|d| (d - mean_deg).powi(2)).sum::<f64>() / n as f64;
                 var.sqrt()
             } else {
                 0.0
@@ -377,7 +361,8 @@ impl TopologyEmbedder {
         values.push(Self::clustering_coefficient(graph));
         values.push(Self::num_components(graph) as f64);
 
-        NeuralEmbedding::new(values, graph.timestamp, "topology")
+        let meta = default_metadata("topology", graph.atlas);
+        NeuralEmbedding::new(values, graph.timestamp, meta)
     }
 
     /// Number of features produced with current settings.
@@ -390,13 +375,13 @@ impl TopologyEmbedder {
             count += 1;
         }
         if self.include_efficiency {
-            count += 2; // global + local
+            count += 2;
         }
         count += 2; // entropy + fiedler
         if self.include_degree_stats {
-            count += 4; // mean, std, max, min
+            count += 4;
         }
-        count += 3; // density, clustering_coefficient, num_components
+        count += 3; // density, clustering, components
         count
     }
 }
@@ -408,16 +393,12 @@ impl Default for TopologyEmbedder {
 }
 
 impl EmbeddingGenerator for TopologyEmbedder {
-    fn dimension(&self) -> usize {
+    fn embedding_dim(&self) -> usize {
         self.feature_count()
     }
 
-    fn method_name(&self) -> &str {
-        "topology"
-    }
-
     fn embed(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
-        TopologyEmbedder::embed(self, graph)
+        self.embed_graph(graph)
     }
 }
 
@@ -467,14 +448,13 @@ mod tests {
         let emb = embedder.embed(&graph).unwrap();
 
         assert_eq!(emb.dimension, embedder.feature_count());
-        assert_eq!(emb.method, "topology");
+        assert_eq!(emb.metadata.embedding_method, "topology");
 
-        // Triangle is complete K3: density = 1.0, clustering = 1.0, 1 component
         let dim = emb.dimension;
         // Last three values: density, clustering, components
-        assert!((emb.values[dim - 3] - 1.0).abs() < 1e-10, "density should be 1.0");
-        assert!((emb.values[dim - 2] - 1.0).abs() < 1e-10, "clustering should be 1.0");
-        assert!((emb.values[dim - 1] - 1.0).abs() < 1e-10, "should be 1 component");
+        assert!((emb.vector[dim - 3] - 1.0).abs() < 1e-10, "density should be 1.0");
+        assert!((emb.vector[dim - 2] - 1.0).abs() < 1e-10, "clustering should be 1.0");
+        assert!((emb.vector[dim - 1] - 1.0).abs() < 1e-10, "should be 1 component");
     }
 
     #[test]
@@ -486,9 +466,9 @@ mod tests {
         // Global efficiency of K3: all pairs distance 1, so efficiency = 1.0
         // index: mincut(0), modularity(1), global_eff(2), local_eff(3)
         assert!(
-            (emb.values[2] - 1.0).abs() < 1e-10,
+            (emb.vector[2] - 1.0).abs() < 1e-10,
             "global efficiency of K3 should be 1.0, got {}",
-            emb.values[2]
+            emb.vector[2]
         );
     }
 
@@ -503,10 +483,9 @@ mod tests {
         };
         let embedder = TopologyEmbedder::new();
         let emb = embedder.embed(&graph).unwrap();
-        // density = 0, clustering = 0, components = 4
         let dim = emb.dimension;
-        assert!((emb.values[dim - 3]).abs() < 1e-10);
-        assert!((emb.values[dim - 2]).abs() < 1e-10);
-        assert!((emb.values[dim - 1] - 4.0).abs() < 1e-10);
+        assert!((emb.vector[dim - 3]).abs() < 1e-10);
+        assert!((emb.vector[dim - 2]).abs() < 1e-10);
+        assert!((emb.vector[dim - 1] - 4.0).abs() < 1e-10);
     }
 }

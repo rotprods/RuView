@@ -1,9 +1,9 @@
-//! Embedding distance and similarity metrics.
+//! Distance metrics for neural embeddings.
 //!
 //! Provides cosine similarity, Euclidean distance, k-nearest-neighbor search,
 //! and a DTW-inspired trajectory distance for comparing embedding sequences.
 
-use crate::{EmbeddingTrajectory, NeuralEmbedding};
+use ruv_neural_core::embedding::{EmbeddingTrajectory, NeuralEmbedding};
 
 /// Cosine similarity between two embeddings.
 ///
@@ -12,7 +12,7 @@ use crate::{EmbeddingTrajectory, NeuralEmbedding};
 ///
 /// Returns 0.0 if either embedding has zero norm.
 pub fn cosine_similarity(a: &NeuralEmbedding, b: &NeuralEmbedding) -> f64 {
-    let len = a.values.len().min(b.values.len());
+    let len = a.vector.len().min(b.vector.len());
     if len == 0 {
         return 0.0;
     }
@@ -22,9 +22,9 @@ pub fn cosine_similarity(a: &NeuralEmbedding, b: &NeuralEmbedding) -> f64 {
     let mut norm_b = 0.0;
 
     for i in 0..len {
-        dot += a.values[i] * b.values[i];
-        norm_a += a.values[i] * a.values[i];
-        norm_b += b.values[i] * b.values[i];
+        dot += a.vector[i] * b.vector[i];
+        norm_a += a.vector[i] * a.vector[i];
+        norm_b += b.vector[i] * b.vector[i];
     }
 
     let denom = norm_a.sqrt() * norm_b.sqrt();
@@ -40,14 +40,14 @@ pub fn cosine_similarity(a: &NeuralEmbedding, b: &NeuralEmbedding) -> f64 {
 /// If the embeddings have different dimensions, only the overlapping
 /// portion is compared.
 pub fn euclidean_distance(a: &NeuralEmbedding, b: &NeuralEmbedding) -> f64 {
-    let len = a.values.len().min(b.values.len());
+    let len = a.vector.len().min(b.vector.len());
     if len == 0 {
         return 0.0;
     }
 
     let mut sum_sq = 0.0;
     for i in 0..len {
-        let diff = a.values[i] - b.values[i];
+        let diff = a.vector[i] - b.vector[i];
         sum_sq += diff * diff;
     }
 
@@ -56,10 +56,10 @@ pub fn euclidean_distance(a: &NeuralEmbedding, b: &NeuralEmbedding) -> f64 {
 
 /// Manhattan (L1) distance between two embeddings.
 pub fn manhattan_distance(a: &NeuralEmbedding, b: &NeuralEmbedding) -> f64 {
-    let len = a.values.len().min(b.values.len());
+    let len = a.vector.len().min(b.vector.len());
     let mut sum = 0.0;
     for i in 0..len {
-        sum += (a.values[i] - b.values[i]).abs();
+        sum += (a.vector[i] - b.vector[i]).abs();
     }
     sum
 }
@@ -97,7 +97,6 @@ pub fn trajectory_distance(a: &EmbeddingTrajectory, b: &EmbeddingTrajectory) -> 
         return f64::INFINITY;
     }
 
-    // DTW cost matrix
     let mut dtw = vec![vec![f64::INFINITY; m + 1]; n + 1];
     dtw[0][0] = 0.0;
 
@@ -117,10 +116,13 @@ pub fn trajectory_distance(a: &EmbeddingTrajectory, b: &EmbeddingTrajectory) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NeuralEmbedding;
+    use crate::default_metadata;
+    use ruv_neural_core::brain::Atlas;
+    use ruv_neural_core::embedding::NeuralEmbedding;
 
     fn emb(values: Vec<f64>) -> NeuralEmbedding {
-        NeuralEmbedding::new(values, 0.0, "test").unwrap()
+        let meta = default_metadata("test", Atlas::Custom(1));
+        NeuralEmbedding::new(values, 0.0, meta).unwrap()
     }
 
     #[test]
@@ -128,7 +130,10 @@ mod tests {
         let a = emb(vec![1.0, 2.0, 3.0]);
         let b = emb(vec![1.0, 2.0, 3.0]);
         let sim = cosine_similarity(&a, &b);
-        assert!((sim - 1.0).abs() < 1e-10, "Identical embeddings: cos sim should be 1.0");
+        assert!(
+            (sim - 1.0).abs() < 1e-10,
+            "Identical embeddings: cos sim should be 1.0"
+        );
     }
 
     #[test]
@@ -136,7 +141,10 @@ mod tests {
         let a = emb(vec![1.0, 0.0]);
         let b = emb(vec![0.0, 1.0]);
         let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-10, "Orthogonal embeddings: cos sim should be 0.0");
+        assert!(
+            sim.abs() < 1e-10,
+            "Orthogonal embeddings: cos sim should be 0.0"
+        );
     }
 
     #[test]
@@ -144,7 +152,10 @@ mod tests {
         let a = emb(vec![1.0, 2.0]);
         let b = emb(vec![-1.0, -2.0]);
         let sim = cosine_similarity(&a, &b);
-        assert!((sim + 1.0).abs() < 1e-10, "Opposite embeddings: cos sim should be -1.0");
+        assert!(
+            (sim + 1.0).abs() < 1e-10,
+            "Opposite embeddings: cos sim should be -1.0"
+        );
     }
 
     #[test]
@@ -152,7 +163,10 @@ mod tests {
         let a = emb(vec![1.0, 2.0, 3.0]);
         let b = emb(vec![1.0, 2.0, 3.0]);
         let dist = euclidean_distance(&a, &b);
-        assert!(dist.abs() < 1e-10, "Identical embeddings: distance should be 0.0");
+        assert!(
+            dist.abs() < 1e-10,
+            "Identical embeddings: distance should be 0.0"
+        );
     }
 
     #[test]
@@ -175,7 +189,6 @@ mod tests {
 
         let nearest = k_nearest(&query, &candidates, 2);
         assert_eq!(nearest.len(), 2);
-        // Closest should be index 3 (0.5, 0.5), then index 1 (1.0, 0.0)
         assert_eq!(nearest[0].0, 3);
         assert_eq!(nearest[1].0, 1);
     }
@@ -192,35 +205,41 @@ mod tests {
     fn test_trajectory_distance_identical() {
         let traj = EmbeddingTrajectory {
             embeddings: vec![emb(vec![1.0, 2.0]), emb(vec![3.0, 4.0])],
-            step_s: 0.5,
+            timestamps: vec![0.0, 0.5],
         };
         let dist = trajectory_distance(&traj, &traj);
-        assert!(dist.abs() < 1e-10, "Identical trajectories: DTW distance should be 0.0");
+        assert!(
+            dist.abs() < 1e-10,
+            "Identical trajectories: DTW distance should be 0.0"
+        );
     }
 
     #[test]
     fn test_trajectory_distance_different() {
         let a = EmbeddingTrajectory {
             embeddings: vec![emb(vec![0.0, 0.0]), emb(vec![1.0, 0.0])],
-            step_s: 0.5,
+            timestamps: vec![0.0, 0.5],
         };
         let b = EmbeddingTrajectory {
             embeddings: vec![emb(vec![0.0, 0.0]), emb(vec![0.0, 1.0])],
-            step_s: 0.5,
+            timestamps: vec![0.0, 0.5],
         };
         let dist = trajectory_distance(&a, &b);
-        assert!(dist > 0.0, "Different trajectories should have non-zero DTW distance");
+        assert!(
+            dist > 0.0,
+            "Different trajectories should have non-zero DTW distance"
+        );
     }
 
     #[test]
     fn test_trajectory_distance_empty() {
         let a = EmbeddingTrajectory {
             embeddings: vec![],
-            step_s: 0.5,
+            timestamps: vec![],
         };
         let b = EmbeddingTrajectory {
             embeddings: vec![emb(vec![1.0])],
-            step_s: 0.5,
+            timestamps: vec![0.0],
         };
         let dist = trajectory_distance(&a, &b);
         assert!(dist.is_infinite());

@@ -4,7 +4,7 @@
 //! (shortest paths, connected components, etc.) on brain connectivity graphs.
 
 use petgraph::graph::{Graph, NodeIndex, UnGraph};
-use petgraph::Undirected;
+use petgraph::visit::EdgeRef;
 
 use ruv_neural_core::brain::Atlas;
 use ruv_neural_core::graph::{BrainEdge, BrainGraph, ConnectivityMetric};
@@ -77,8 +77,6 @@ pub fn from_petgraph(
 pub fn node_index(region_id: usize) -> NodeIndex {
     NodeIndex::new(region_id)
 }
-
-use petgraph::visit::EdgeRef;
 
 #[cfg(test)]
 mod tests {

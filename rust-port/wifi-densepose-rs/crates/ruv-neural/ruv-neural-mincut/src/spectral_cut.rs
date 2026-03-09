@@ -234,10 +234,24 @@ pub fn cheeger_constant(graph: &BrainGraph) -> Result<f64> {
     }
 }
 
-/// Cheeger inequality bounds relating the Fiedler value lambda_2 to the
-/// Cheeger constant h(G):
+/// Cheeger inequality bounds relating the Fiedler value lambda_2 of the
+/// **unnormalized** Laplacian to the conductance h(G).
 ///
-///     lambda_2 / 2 <= h(G) <= sqrt(2 * lambda_2)
+/// For the unnormalized Laplacian with maximum degree d_max:
+///
+/// ```text
+/// lambda_2 / (2 * d_max) <= h(G) <= sqrt(2 * lambda_2 / d_min)
+/// ```
+///
+/// For convenience when d_max is unknown, this function uses the normalized
+/// Laplacian relationship:
+///
+/// ```text
+/// lambda_2_norm / 2 <= h(G) <= sqrt(2 * lambda_2_norm)
+/// ```
+///
+/// The `fiedler_value` parameter should be from the **normalized** Laplacian
+/// (i.e., `unnormalized_lambda_2 / d_max` is a conservative approximation).
 ///
 /// Returns `(lower_bound, upper_bound)`.
 pub fn cheeger_bound(fiedler_value: f64) -> (f64, f64) {
@@ -331,7 +345,11 @@ mod tests {
         );
     }
 
-    /// Cheeger bounds: lambda_2/2 <= h(G) <= sqrt(2*lambda_2).
+    /// Cheeger bounds using normalized Laplacian eigenvalue.
+    ///
+    /// For the unnormalized Laplacian eigenvalue lambda_2 and max degree d_max,
+    /// the normalized eigenvalue is lambda_2_norm = lambda_2 / d_max, and the
+    /// Cheeger inequality states: lambda_2_norm / 2 <= h(G) <= sqrt(2 * lambda_2_norm).
     #[test]
     fn test_cheeger_bounds_hold() {
         let graph = BrainGraph {
@@ -349,21 +367,31 @@ mod tests {
 
         let (fiedler_value, _) = fiedler_decomposition(&graph).unwrap();
         let h = cheeger_constant(&graph).unwrap();
-        let (lower, upper) = cheeger_bound(fiedler_value);
+
+        // For conductance (cut/vol), the Cheeger inequality uses the normalized
+        // Laplacian eigenvalue. For C4 with unit weights, d_max = 2, so:
+        //   lambda_2_norm = lambda_2 / d_max
+        let adj = graph.adjacency_matrix();
+        let d_max: f64 = (0..graph.num_nodes)
+            .map(|i| adj[i].iter().sum::<f64>())
+            .fold(f64::NEG_INFINITY, f64::max);
+        let lambda_2_norm = fiedler_value / d_max;
+
+        let (lower, upper) = cheeger_bound(lambda_2_norm);
 
         assert!(
             h >= lower - 1e-6,
-            "Cheeger h={} should be >= lower bound {} (lambda2={})",
+            "Cheeger h={} should be >= lower bound {} (lambda2_norm={})",
             h,
             lower,
-            fiedler_value
+            lambda_2_norm
         );
         assert!(
             h <= upper + 1e-6,
-            "Cheeger h={} should be <= upper bound {} (lambda2={})",
+            "Cheeger h={} should be <= upper bound {} (lambda2_norm={})",
             h,
             upper,
-            fiedler_value
+            lambda_2_norm
         );
     }
 

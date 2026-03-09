@@ -116,6 +116,11 @@ impl OpmArray {
         }
     }
 
+    /// Returns the sensor array metadata.
+    pub fn sensor_array(&self) -> &SensorArray {
+        &self.array
+    }
+
     /// Apply cross-talk compensation to raw channel data.
     ///
     /// Multiplies the raw data vector by the inverse cross-talk matrix.

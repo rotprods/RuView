@@ -123,6 +123,7 @@ pub fn load_rvf(path: &str) -> Result<NeuralMemoryStore> {
 mod tests {
     use super::*;
     use ruv_neural_core::brain::Atlas;
+    use ruv_neural_core::embedding::EmbeddingMetadata;
     use ruv_neural_core::topology::CognitiveState;
 
     fn make_embedding(vector: Vec<f64>, timestamp: f64) -> NeuralEmbedding {

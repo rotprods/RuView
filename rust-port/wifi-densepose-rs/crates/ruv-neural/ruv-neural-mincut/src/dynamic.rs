@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use ruv_neural_core::graph::BrainGraph;
 use ruv_neural_core::topology::MincutResult;
-use ruv_neural_core::{Result, RuvNeuralError};
+use ruv_neural_core::Result;
 
 use crate::stoer_wagner::stoer_wagner_mincut;
 
@@ -161,7 +161,9 @@ impl DynamicMincutTracker {
     ///
     /// The integration index is defined as:
     ///
-    ///     I(t) = 1.0 - mincut(t) / max_mincut
+    /// ```text
+    /// I(t) = 1.0 - mincut(t) / max_mincut
+    /// ```
     ///
     /// High values (close to 1) indicate integrated states; low values indicate
     /// segregated states.
@@ -352,7 +354,7 @@ mod tests {
     fn test_integration_index() {
         let mut tracker = DynamicMincutTracker::new();
         for i in 0..3 {
-            let g = make_graph(i as f64, (i as f64 + 1.0));
+            let g = make_graph(i as f64, i as f64 + 1.0);
             tracker.update(&g).unwrap();
         }
 

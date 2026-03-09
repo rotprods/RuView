@@ -3,10 +3,12 @@
 //! Concatenates weighted embeddings from multiple embedding generators
 //! into a single vector representation.
 
+use ruv_neural_core::embedding::NeuralEmbedding;
 use ruv_neural_core::error::{Result, RuvNeuralError};
 use ruv_neural_core::graph::BrainGraph;
+use ruv_neural_core::traits::EmbeddingGenerator;
 
-use crate::{EmbeddingGenerator, NeuralEmbedding};
+use crate::default_metadata;
 
 /// Combines multiple embedding methods into a single embedding vector.
 pub struct CombinedEmbedder {
@@ -39,11 +41,11 @@ impl CombinedEmbedder {
 
     /// Total embedding dimension (sum of all sub-embedder dimensions).
     pub fn total_dimension(&self) -> usize {
-        self.embedders.iter().map(|e| e.dimension()).sum()
+        self.embedders.iter().map(|e| e.embedding_dim()).sum()
     }
 
     /// Generate a combined embedding by concatenating weighted sub-embeddings.
-    pub fn embed(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
+    pub fn embed_graph(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
         if self.embedders.is_empty() {
             return Err(RuvNeuralError::Embedding(
                 "CombinedEmbedder has no sub-embedders".into(),
@@ -54,12 +56,13 @@ impl CombinedEmbedder {
 
         for (embedder, &weight) in self.embedders.iter().zip(self.weights.iter()) {
             let sub_emb = embedder.embed(graph)?;
-            for v in &sub_emb.values {
+            for v in &sub_emb.vector {
                 values.push(v * weight);
             }
         }
 
-        NeuralEmbedding::new(values, graph.timestamp, "combined")
+        let meta = default_metadata("combined", graph.atlas);
+        NeuralEmbedding::new(values, graph.timestamp, meta)
     }
 }
 
@@ -70,16 +73,12 @@ impl Default for CombinedEmbedder {
 }
 
 impl EmbeddingGenerator for CombinedEmbedder {
-    fn dimension(&self) -> usize {
+    fn embedding_dim(&self) -> usize {
         self.total_dimension()
     }
 
-    fn method_name(&self) -> &str {
-        "combined"
-    }
-
     fn embed(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
-        CombinedEmbedder::embed(self, graph)
+        self.embed_graph(graph)
     }
 }
 
@@ -137,8 +136,8 @@ mod tests {
         let spectral = SpectralEmbedder::new(2);
         let topo = TopologyEmbedder::new();
 
-        let spectral_dim = spectral.dimension();
-        let topo_dim = topo.dimension();
+        let spectral_dim = spectral.embedding_dim();
+        let topo_dim = topo.embedding_dim();
 
         let combined = CombinedEmbedder::new()
             .add(Box::new(spectral), 1.0)
@@ -148,7 +147,7 @@ mod tests {
 
         let emb = combined.embed(&graph).unwrap();
         assert_eq!(emb.dimension, spectral_dim + topo_dim);
-        assert_eq!(emb.method, "combined");
+        assert_eq!(emb.metadata.embedding_method, "combined");
     }
 
     #[test]
@@ -156,15 +155,13 @@ mod tests {
         let graph = make_test_graph();
         let topo = TopologyEmbedder::new();
 
-        // Weight = 2.0
         let combined = CombinedEmbedder::new().add(Box::new(topo), 2.0);
         let emb = combined.embed(&graph).unwrap();
 
-        // Compare with direct topology embedding
         let topo2 = TopologyEmbedder::new();
         let direct = topo2.embed(&graph).unwrap();
 
-        for (c, d) in emb.values.iter().zip(direct.values.iter()) {
+        for (c, d) in emb.vector.iter().zip(direct.vector.iter()) {
             assert!(
                 (c - 2.0 * d).abs() < 1e-10,
                 "Weight should scale values: {} vs 2*{}",

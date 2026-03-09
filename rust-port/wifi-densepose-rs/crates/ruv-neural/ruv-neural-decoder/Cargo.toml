@@ -13,8 +13,8 @@ wasm = []
 
 [dependencies]
 ruv-neural-core = { workspace = true }
-ruv-neural-embed = { workspace = true }
-ruv-neural-memory = { workspace = true }
+# ruv-neural-embed and ruv-neural-memory are available for future integration
+# but not currently required for core decoder functionality
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

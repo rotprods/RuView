@@ -5,7 +5,7 @@
 //! It also supports sliding-window construction from raw time series via the
 //! signal crate's connectivity metrics.
 
-use ruv_neural_core::brain::{Atlas, Parcellation};
+use ruv_neural_core::brain::Parcellation;
 use ruv_neural_core::error::{Result, RuvNeuralError};
 use ruv_neural_core::graph::{BrainEdge, BrainGraph, BrainGraphSequence, ConnectivityMetric};
 use ruv_neural_core::signal::{FrequencyBand, MultiChannelTimeSeries};
@@ -102,7 +102,6 @@ impl BrainGraphConstructor {
         &self,
         data: &MultiChannelTimeSeries,
     ) -> BrainGraphSequence {
-        let n_channels = data.num_channels;
         let n_samples = data.num_samples;
         let sr = data.sample_rate_hz;
 

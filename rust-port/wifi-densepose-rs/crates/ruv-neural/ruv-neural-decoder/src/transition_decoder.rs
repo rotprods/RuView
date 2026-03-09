@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use ruv_neural_core::topology::{CognitiveState, TopologyMetrics};
+use serde::{Deserialize, Serialize};
 
 /// Detect cognitive state transitions from topology change patterns.
 ///
@@ -27,7 +28,7 @@ pub struct TransitionPattern {
 }
 
 /// A detected state transition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateTransition {
     /// State before the transition.
     pub from: CognitiveState,
@@ -235,14 +236,24 @@ mod tests {
             },
         );
 
-        // Feed metrics that match the pattern.
-        let _ = decoder.update(make_metrics(5.0, 0.4, 0.0));
-        let _ = decoder.update(make_metrics(6.0, 0.45, 0.5));
-        let _ = decoder.update(make_metrics(7.0, 0.5, 1.0));
-        let result = decoder.update(make_metrics(8.0, 0.6, 2.0));
+        // Feed metrics that progressively match the pattern.
+        // The transition may fire on any update once deltas are large enough.
+        let updates = vec![
+            make_metrics(5.0, 0.4, 0.0),
+            make_metrics(6.0, 0.45, 0.5),
+            make_metrics(7.0, 0.5, 1.0),
+            make_metrics(8.0, 0.6, 2.0),
+        ];
 
-        assert!(result.is_some(), "Expected a transition to be detected");
-        let transition = result.unwrap();
+        let mut detected: Option<StateTransition> = None;
+        for m in updates {
+            if let Some(t) = decoder.update(m) {
+                detected = Some(t);
+            }
+        }
+
+        assert!(detected.is_some(), "Expected a transition to be detected");
+        let transition = detected.unwrap();
         assert_eq!(transition.from, CognitiveState::Rest);
         assert_eq!(transition.to, CognitiveState::Focused);
         assert!(transition.confidence > 0.0 && transition.confidence <= 1.0);

@@ -1,111 +1,282 @@
-//! Connectivity metrics between neural signal channels.
+//! Cross-channel coupling and connectivity metrics.
 //!
-//! Provides PLV, coherence, imaginary coherence, and amplitude envelope correlation.
+//! Provides measures of functional connectivity between neural signals:
+//! - Phase Locking Value (PLV)
+//! - Magnitude-squared coherence
+//! - Imaginary coherence (robust to volume conduction)
+//! - Amplitude envelope correlation
+//! - Full connectivity matrix computation
 
-use crate::hilbert::{hilbert_transform, instantaneous_amplitude};
 use num_complex::Complex;
+use ruv_neural_core::signal::{FrequencyBand, MultiChannelTimeSeries};
+use rustfft::FftPlanner;
+use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
-/// Compute the Phase Locking Value between two signals.
+use crate::filter::BandpassFilter;
+use crate::hilbert::hilbert_transform;
+
+/// Type of connectivity metric to compute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConnectivityMetric {
+    /// Phase Locking Value.
+    Plv,
+    /// Amplitude envelope correlation.
+    Aec,
+}
+
+/// Compute the Phase Locking Value (PLV) between two signals.
 ///
-/// PLV measures the consistency of phase difference between two signals.
-/// Returns a value in [0, 1] where 1 = perfectly phase-locked.
-pub fn phase_locking_value(signal_a: &[f64], signal_b: &[f64]) -> f64 {
+/// PLV = |mean(exp(j * (phase_a - phase_b)))|
+///
+/// The signals are first bandpass-filtered to the specified frequency band,
+/// then the Hilbert transform extracts instantaneous phase.
+///
+/// PLV = 1.0 indicates perfect phase synchrony;
+/// PLV ~ 0.0 indicates no consistent phase relationship.
+///
+/// # Arguments
+/// * `signal_a` - First channel time series
+/// * `signal_b` - Second channel time series
+/// * `sample_rate` - Sampling rate in Hz
+/// * `band` - Frequency band for phase extraction
+pub fn phase_locking_value(
+    signal_a: &[f64],
+    signal_b: &[f64],
+    sample_rate: f64,
+    band: FrequencyBand,
+) -> f64 {
     let n = signal_a.len().min(signal_b.len());
-    if n == 0 {
+    if n < 4 {
         return 0.0;
     }
-    let analytic_a = hilbert_transform(signal_a);
-    let analytic_b = hilbert_transform(signal_b);
 
-    let sum: Complex<f64> = analytic_a[..n]
-        .iter()
-        .zip(analytic_b[..n].iter())
-        .map(|(a, b)| {
-            let phase_diff = (a / a.norm()) * (b / b.norm()).conj();
-            if phase_diff.norm() > 0.0 {
-                phase_diff / phase_diff.norm()
-            } else {
-                Complex::new(0.0, 0.0)
-            }
-        })
-        .fold(Complex::new(0.0, 0.0), |acc, x| acc + x);
+    let (low, high) = band.range_hz();
+    let bp = BandpassFilter::new(2, low, high, sample_rate);
+
+    let filtered_a = bp.apply(&signal_a[..n]);
+    let filtered_b = bp.apply(&signal_b[..n]);
+
+    let analytic_a = hilbert_transform(&filtered_a);
+    let analytic_b = hilbert_transform(&filtered_b);
+
+    // Compute mean of exp(j*(phase_a - phase_b))
+    let mut sum = Complex::new(0.0, 0.0);
+    for i in 0..n {
+        let phase_a = analytic_a[i].im.atan2(analytic_a[i].re);
+        let phase_b = analytic_b[i].im.atan2(analytic_b[i].re);
+        let diff = phase_a - phase_b;
+        sum += Complex::new(diff.cos(), diff.sin());
+    }
 
     (sum / n as f64).norm()
 }
 
 /// Compute magnitude-squared coherence between two signals.
-pub fn coherence(signal_a: &[f64], signal_b: &[f64]) -> f64 {
+///
+/// Coh(f) = |S_ab(f)|^2 / (S_aa(f) * S_bb(f))
+///
+/// Uses Welch's method with overlapping segments and Hann window.
+///
+/// # Returns
+/// Vector of (frequency, coherence) pairs.
+pub fn coherence(
+    signal_a: &[f64],
+    signal_b: &[f64],
+    sample_rate: f64,
+) -> Vec<(f64, f64)> {
     let n = signal_a.len().min(signal_b.len());
     if n == 0 {
-        return 0.0;
+        return Vec::new();
     }
-    // Simplified: correlation of instantaneous amplitudes
-    let amp_a = instantaneous_amplitude(signal_a);
-    let amp_b = instantaneous_amplitude(signal_b);
-    pearson_correlation(&amp_a[..n], &amp_b[..n]).abs()
+
+    let window_size = 256.min(n);
+    let overlap = window_size / 2;
+    let hop = window_size - overlap;
+
+    let window = hann_window(window_size);
+    let num_freqs = window_size / 2 + 1;
+
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(window_size);
+
+    let mut saa = vec![0.0; num_freqs];
+    let mut sbb = vec![0.0; num_freqs];
+    let mut sab = vec![Complex::new(0.0, 0.0); num_freqs];
+    let mut num_segments = 0;
+
+    let mut start = 0;
+    while start + window_size <= n {
+        let mut fa: Vec<Complex<f64>> = (0..window_size)
+            .map(|i| Complex::new(signal_a[start + i] * window[i], 0.0))
+            .collect();
+        let mut fb: Vec<Complex<f64>> = (0..window_size)
+            .map(|i| Complex::new(signal_b[start + i] * window[i], 0.0))
+            .collect();
+
+        fft.process(&mut fa);
+        fft.process(&mut fb);
+
+        for k in 0..num_freqs {
+            saa[k] += fa[k].norm_sqr();
+            sbb[k] += fb[k].norm_sqr();
+            sab[k] += fa[k] * fb[k].conj();
+        }
+        num_segments += 1;
+        start += hop;
+    }
+
+    if num_segments == 0 {
+        return Vec::new();
+    }
+
+    let freq_res = sample_rate / window_size as f64;
+    (0..num_freqs)
+        .map(|k| {
+            let freq = k as f64 * freq_res;
+            let denom = saa[k] * sbb[k];
+            let coh = if denom > 1e-30 {
+                sab[k].norm_sqr() / denom
+            } else {
+                0.0
+            };
+            (freq, coh.min(1.0))
+        })
+        .collect()
 }
 
-/// Compute imaginary coherence (volume-conduction robust).
-pub fn imaginary_coherence(signal_a: &[f64], signal_b: &[f64]) -> f64 {
+/// Compute imaginary coherence between two signals.
+///
+/// ImCoh(f) = Im(S_ab(f)) / sqrt(S_aa(f) * S_bb(f))
+///
+/// The imaginary part of coherence is robust to volume conduction
+/// artifacts, which produce zero-lag (purely real) correlations.
+///
+/// # Returns
+/// Vector of (frequency, imaginary_coherence) pairs.
+pub fn imaginary_coherence(
+    signal_a: &[f64],
+    signal_b: &[f64],
+    sample_rate: f64,
+) -> Vec<(f64, f64)> {
     let n = signal_a.len().min(signal_b.len());
     if n == 0 {
-        return 0.0;
+        return Vec::new();
     }
-    let analytic_a = hilbert_transform(signal_a);
-    let analytic_b = hilbert_transform(signal_b);
 
-    let cross_spec: Complex<f64> = analytic_a[..n]
-        .iter()
-        .zip(analytic_b[..n].iter())
-        .map(|(a, b)| a * b.conj())
-        .fold(Complex::new(0.0, 0.0), |acc, x| acc + x);
+    let window_size = 256.min(n);
+    let overlap = window_size / 2;
+    let hop = window_size - overlap;
 
-    let psd_a: f64 = analytic_a[..n].iter().map(|a| a.norm_sqr()).sum();
-    let psd_b: f64 = analytic_b[..n].iter().map(|b| b.norm_sqr()).sum();
-    let denom = (psd_a * psd_b).sqrt();
-    if denom == 0.0 {
-        return 0.0;
+    let window = hann_window(window_size);
+    let num_freqs = window_size / 2 + 1;
+
+    let mut planner = FftPlanner::new();
+    let fft = planner.plan_fft_forward(window_size);
+
+    let mut saa = vec![0.0; num_freqs];
+    let mut sbb = vec![0.0; num_freqs];
+    let mut sab = vec![Complex::new(0.0, 0.0); num_freqs];
+    let mut num_segments = 0;
+
+    let mut start = 0;
+    while start + window_size <= n {
+        let mut fa: Vec<Complex<f64>> = (0..window_size)
+            .map(|i| Complex::new(signal_a[start + i] * window[i], 0.0))
+            .collect();
+        let mut fb: Vec<Complex<f64>> = (0..window_size)
+            .map(|i| Complex::new(signal_b[start + i] * window[i], 0.0))
+            .collect();
+
+        fft.process(&mut fa);
+        fft.process(&mut fb);
+
+        for k in 0..num_freqs {
+            saa[k] += fa[k].norm_sqr();
+            sbb[k] += fb[k].norm_sqr();
+            sab[k] += fa[k] * fb[k].conj();
+        }
+        num_segments += 1;
+        start += hop;
     }
-    (cross_spec.im / denom).abs()
+
+    if num_segments == 0 {
+        return Vec::new();
+    }
+
+    let freq_res = sample_rate / window_size as f64;
+    (0..num_freqs)
+        .map(|k| {
+            let freq = k as f64 * freq_res;
+            let denom = (saa[k] * sbb[k]).sqrt();
+            let im_coh = if denom > 1e-30 {
+                sab[k].im / denom
+            } else {
+                0.0
+            };
+            (freq, im_coh)
+        })
+        .collect()
 }
 
 /// Compute amplitude envelope correlation between two signals.
-pub fn amplitude_envelope_correlation(signal_a: &[f64], signal_b: &[f64]) -> f64 {
+///
+/// 1. Bandpass filter both signals to the specified frequency band
+/// 2. Extract amplitude envelopes via Hilbert transform
+/// 3. Compute Pearson correlation of the envelopes
+///
+/// # Returns
+/// Correlation coefficient in [-1, 1].
+pub fn amplitude_envelope_correlation(
+    signal_a: &[f64],
+    signal_b: &[f64],
+    sample_rate: f64,
+    band: FrequencyBand,
+) -> f64 {
     let n = signal_a.len().min(signal_b.len());
-    if n == 0 {
+    if n < 4 {
         return 0.0;
     }
-    let env_a = instantaneous_amplitude(signal_a);
-    let env_b = instantaneous_amplitude(signal_b);
-    pearson_correlation(&env_a[..n], &env_b[..n])
+
+    let (low, high) = band.range_hz();
+    let bp = BandpassFilter::new(2, low, high, sample_rate);
+
+    let filtered_a = bp.apply(&signal_a[..n]);
+    let filtered_b = bp.apply(&signal_b[..n]);
+
+    let env_a = crate::hilbert::instantaneous_amplitude(&filtered_a);
+    let env_b = crate::hilbert::instantaneous_amplitude(&filtered_b);
+
+    pearson_correlation(&env_a, &env_b)
 }
 
-/// Compute all-pairs connectivity for a set of channels.
+/// Compute a full connectivity matrix for all channel pairs.
 ///
-/// Returns a symmetric matrix `result[i][j]` with connectivity between channel i and j.
+/// # Arguments
+/// * `data` - Multi-channel time series
+/// * `metric` - Which connectivity metric to use
+/// * `band` - Frequency band (for PLV and AEC)
+///
+/// # Returns
+/// NxN matrix where entry [i][j] is the connectivity between channels i and j.
 pub fn compute_all_pairs(
-    channels: &[Vec<f64>],
-    metric: &crate::ConnectivityMetric,
+    data: &MultiChannelTimeSeries,
+    metric: ConnectivityMetric,
+    band: FrequencyBand,
 ) -> Vec<Vec<f64>> {
-    let n = channels.len();
-    let mut matrix = vec![vec![0.0; n]; n];
+    let nc = data.num_channels;
+    let sr = data.sample_rate_hz;
+    let mut matrix = vec![vec![0.0; nc]; nc];
 
-    for i in 0..n {
-        matrix[i][i] = 1.0; // Self-connectivity = 1
-        for j in (i + 1)..n {
+    for i in 0..nc {
+        matrix[i][i] = 1.0; // Self-connectivity is 1.0
+        for j in (i + 1)..nc {
             let val = match metric {
-                crate::ConnectivityMetric::Plv => {
-                    phase_locking_value(&channels[i], &channels[j])
+                ConnectivityMetric::Plv => {
+                    phase_locking_value(&data.data[i], &data.data[j], sr, band)
                 }
-                crate::ConnectivityMetric::Coherence => {
-                    coherence(&channels[i], &channels[j])
-                }
-                crate::ConnectivityMetric::ImaginaryCoherence => {
-                    imaginary_coherence(&channels[i], &channels[j])
-                }
-                crate::ConnectivityMetric::AmplitudeEnvelopeCorrelation => {
-                    amplitude_envelope_correlation(&channels[i], &channels[j])
+                ConnectivityMetric::Aec => {
+                    amplitude_envelope_correlation(&data.data[i], &data.data[j], sr, band)
                 }
             };
             matrix[i][j] = val;
@@ -116,28 +287,156 @@ pub fn compute_all_pairs(
     matrix
 }
 
-/// Pearson correlation coefficient between two slices.
+/// Pearson correlation coefficient between two vectors.
 fn pearson_correlation(a: &[f64], b: &[f64]) -> f64 {
-    let n = a.len().min(b.len()) as f64;
-    if n <= 1.0 {
+    let n = a.len().min(b.len());
+    if n == 0 {
         return 0.0;
     }
-    let mean_a = a.iter().sum::<f64>() / n;
-    let mean_b = b.iter().sum::<f64>() / n;
+
+    let mean_a = a[..n].iter().sum::<f64>() / n as f64;
+    let mean_b = b[..n].iter().sum::<f64>() / n as f64;
+
     let mut cov = 0.0;
     let mut var_a = 0.0;
     let mut var_b = 0.0;
-    for i in 0..n as usize {
+
+    for i in 0..n {
         let da = a[i] - mean_a;
         let db = b[i] - mean_b;
         cov += da * db;
         var_a += da * da;
         var_b += db * db;
     }
+
     let denom = (var_a * var_b).sqrt();
-    if denom == 0.0 {
+    if denom < 1e-30 {
         0.0
     } else {
         cov / denom
+    }
+}
+
+/// Generate a Hann window (local copy for this module).
+fn hann_window(length: usize) -> Vec<f64> {
+    (0..length)
+        .map(|i| 0.5 * (1.0 - (2.0 * PI * i as f64 / (length - 1).max(1) as f64).cos()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_abs_diff_eq;
+    use std::f64::consts::PI;
+
+    #[test]
+    fn plv_of_identical_signals_is_one() {
+        let sr = 1000.0;
+        let n = 2000;
+        let signal: Vec<f64> = (0..n)
+            .map(|i| {
+                let t = i as f64 / sr;
+                (2.0 * PI * 10.0 * t).sin()
+            })
+            .collect();
+
+        let plv = phase_locking_value(&signal, &signal, sr, FrequencyBand::Alpha);
+
+        assert!(
+            plv > 0.9,
+            "PLV of identical signals should be ~1.0, got {plv}"
+        );
+    }
+
+    #[test]
+    fn plv_of_unrelated_signals_is_low() {
+        let sr = 1000.0;
+        let n = 4000;
+        // Two signals at different frequencies
+        let signal_a: Vec<f64> = (0..n)
+            .map(|i| {
+                let t = i as f64 / sr;
+                (2.0 * PI * 10.0 * t).sin()
+            })
+            .collect();
+        let signal_b: Vec<f64> = (0..n)
+            .map(|i| {
+                let t = i as f64 / sr;
+                (2.0 * PI * 11.3 * t).sin() + 0.5 * (2.0 * PI * 9.7 * t).cos()
+            })
+            .collect();
+
+        let plv = phase_locking_value(&signal_a, &signal_b, sr, FrequencyBand::Alpha);
+
+        assert!(
+            plv < 0.7,
+            "PLV of unrelated signals should be low, got {plv}"
+        );
+    }
+
+    #[test]
+    fn coherence_of_identical_signals_is_one() {
+        let sr = 1000.0;
+        let n = 2000;
+        let signal: Vec<f64> = (0..n)
+            .map(|i| {
+                let t = i as f64 / sr;
+                (2.0 * PI * 20.0 * t).sin()
+            })
+            .collect();
+
+        let coh = coherence(&signal, &signal, sr);
+
+        // At the signal frequency (~20 Hz), coherence should be ~1.0
+        let peak_coh = coh
+            .iter()
+            .filter(|(f, _)| *f > 15.0 && *f < 25.0)
+            .map(|(_, c)| *c)
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap_or(0.0);
+
+        assert!(
+            peak_coh > 0.95,
+            "Coherence of identical signals should be ~1.0 at signal freq, got {peak_coh}"
+        );
+    }
+
+    #[test]
+    fn compute_all_pairs_returns_symmetric_matrix() {
+        let data = MultiChannelTimeSeries {
+            data: vec![
+                (0..1000)
+                    .map(|i| (2.0 * PI * 10.0 * i as f64 / 1000.0).sin())
+                    .collect(),
+                (0..1000)
+                    .map(|i| (2.0 * PI * 10.0 * i as f64 / 1000.0).cos())
+                    .collect(),
+                (0..1000)
+                    .map(|i| (2.0 * PI * 10.0 * i as f64 / 1000.0 + 0.3).sin())
+                    .collect(),
+            ],
+            sample_rate_hz: 1000.0,
+            num_channels: 3,
+            num_samples: 1000,
+            timestamp_start: 0.0,
+        };
+
+        let matrix = compute_all_pairs(&data, ConnectivityMetric::Plv, FrequencyBand::Alpha);
+
+        assert_eq!(matrix.len(), 3);
+        assert_eq!(matrix[0].len(), 3);
+
+        // Diagonal should be 1.0
+        for i in 0..3 {
+            assert_abs_diff_eq!(matrix[i][i], 1.0, epsilon = 1e-10);
+        }
+
+        // Should be symmetric
+        for i in 0..3 {
+            for j in 0..3 {
+                assert_abs_diff_eq!(matrix[i][j], matrix[j][i], epsilon = 1e-10);
+            }
+        }
     }
 }

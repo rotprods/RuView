@@ -1,12 +1,14 @@
-//! Temporal embedding of brain graph sequences.
+//! Temporal sliding-window embeddings for brain graph sequences.
 //!
 //! Embeds a time series of brain graphs into trajectory vectors by combining
 //! each graph's embedding with an exponentially-weighted average of past embeddings.
 
+use ruv_neural_core::embedding::{EmbeddingTrajectory, NeuralEmbedding};
 use ruv_neural_core::error::{Result, RuvNeuralError};
 use ruv_neural_core::graph::{BrainGraph, BrainGraphSequence};
+use ruv_neural_core::traits::EmbeddingGenerator;
 
-use crate::{EmbeddingGenerator, EmbeddingTrajectory, NeuralEmbedding};
+use crate::default_metadata;
 
 /// Temporal embedder that enriches each graph embedding with historical context.
 pub struct TemporalEmbedder {
@@ -47,16 +49,18 @@ impl TemporalEmbedder {
 
         let mut history: Vec<NeuralEmbedding> = Vec::new();
         let mut embeddings = Vec::with_capacity(sequence.graphs.len());
+        let mut timestamps = Vec::with_capacity(sequence.graphs.len());
 
         for graph in &sequence.graphs {
             let emb = self.embed_with_context(graph, &history)?;
+            timestamps.push(graph.timestamp);
             history.push(self.base_embedder.embed(graph)?);
             embeddings.push(emb);
         }
 
         Ok(EmbeddingTrajectory {
             embeddings,
-            step_s: sequence.window_step_s,
+            timestamps,
         })
     }
 
@@ -75,12 +79,12 @@ impl TemporalEmbedder {
 
         let context = self.compute_context(history, base_dim);
 
-        // Concatenate current embedding with context
         let mut values = Vec::with_capacity(base_dim * 2);
-        values.extend_from_slice(&current.values);
+        values.extend_from_slice(&current.vector);
         values.extend_from_slice(&context);
 
-        NeuralEmbedding::new(values, graph.timestamp, "temporal")
+        let meta = default_metadata("temporal", graph.atlas);
+        NeuralEmbedding::new(values, graph.timestamp, meta)
     }
 
     /// Compute the exponentially-weighted context vector from history.
@@ -104,7 +108,7 @@ impl TemporalEmbedder {
             total_weight += w;
             let usable_dim = dim.min(emb.dimension);
             for j in 0..usable_dim {
-                context[j] += w * emb.values[j];
+                context[j] += w * emb.vector[j];
             }
         }
 
@@ -119,7 +123,7 @@ impl TemporalEmbedder {
 
     /// Output dimension: base dimension * 2 (current + context).
     pub fn output_dimension(&self) -> usize {
-        self.base_embedder.dimension() * 2
+        self.base_embedder.embedding_dim() * 2
     }
 }
 
@@ -162,13 +166,12 @@ mod tests {
         let graph = make_graph(0.0);
         let emb = embedder.embed_with_context(&graph, &[]).unwrap();
 
-        let base_dim = TopologyEmbedder::new().dimension();
+        let base_dim = TopologyEmbedder::new().embedding_dim();
         assert_eq!(emb.dimension, base_dim * 2);
 
-        // Context part should be all zeros
         for i in base_dim..emb.dimension {
             assert!(
-                emb.values[i].abs() < 1e-12,
+                emb.vector[i].abs() < 1e-12,
                 "Context should be zero with no history"
             );
         }
@@ -186,17 +189,20 @@ mod tests {
 
         let trajectory = embedder.embed_sequence(&sequence).unwrap();
         assert_eq!(trajectory.len(), 3);
-        assert!((trajectory.step_s - 0.5).abs() < 1e-10);
+        assert_eq!(trajectory.timestamps.len(), 3);
 
-        // First embedding should have zero context
-        let base_dim = TopologyEmbedder::new().dimension();
+        let base_dim = TopologyEmbedder::new().embedding_dim();
         for i in base_dim..trajectory.embeddings[0].dimension {
-            assert!(trajectory.embeddings[0].values[i].abs() < 1e-12);
+            assert!(trajectory.embeddings[0].vector[i].abs() < 1e-12);
         }
 
-        // Later embeddings should have non-zero context (since graphs are non-trivial)
-        let has_nonzero = trajectory.embeddings[2].values[base_dim..].iter().any(|v| v.abs() > 1e-12);
-        assert!(has_nonzero, "Third embedding should have non-zero temporal context");
+        let has_nonzero = trajectory.embeddings[2].vector[base_dim..]
+            .iter()
+            .any(|v| v.abs() > 1e-12);
+        assert!(
+            has_nonzero,
+            "Third embedding should have non-zero temporal context"
+        );
     }
 
     #[test]

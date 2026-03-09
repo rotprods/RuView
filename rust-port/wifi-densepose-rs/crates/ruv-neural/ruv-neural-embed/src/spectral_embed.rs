@@ -4,10 +4,12 @@
 //! of the normalized graph Laplacian. The graph-level embedding is formed by
 //! concatenating summary statistics of the per-node spectral coordinates.
 
+use ruv_neural_core::embedding::NeuralEmbedding;
 use ruv_neural_core::error::{Result, RuvNeuralError};
 use ruv_neural_core::graph::BrainGraph;
+use ruv_neural_core::traits::EmbeddingGenerator;
 
-use crate::{EmbeddingGenerator, NeuralEmbedding};
+use crate::default_metadata;
 
 /// Spectral embedding via Laplacian eigenvectors.
 pub struct SpectralEmbedder {
@@ -30,12 +32,8 @@ impl SpectralEmbedder {
 
     /// Compute the normalized Laplacian matrix: L_norm = I - D^{-1/2} A D^{-1/2}.
     fn normalized_laplacian(adj: &[Vec<f64>], n: usize) -> Vec<Vec<f64>> {
-        // Degree vector
-        let degrees: Vec<f64> = (0..n)
-            .map(|i| adj[i].iter().sum::<f64>())
-            .collect();
+        let degrees: Vec<f64> = (0..n).map(|i| adj[i].iter().sum::<f64>()).collect();
 
-        // D^{-1/2}
         let inv_sqrt_deg: Vec<f64> = degrees
             .iter()
             .map(|d| if *d > 1e-12 { 1.0 / d.sqrt() } else { 0.0 })
@@ -69,7 +67,7 @@ impl SpectralEmbedder {
         }
         let k = k.min(n);
 
-        // Estimate max eigenvalue via Gershgorin bound (for shift)
+        // Gershgorin bound for max eigenvalue
         let max_eig: f64 = (0..n)
             .map(|i| {
                 let diag = laplacian[i][i];
@@ -82,7 +80,6 @@ impl SpectralEmbedder {
             .fold(0.0_f64, f64::max);
 
         // Shifted matrix: M = max_eig * I - L
-        // Largest eigenvectors of M correspond to smallest eigenvectors of L
         let shifted: Vec<Vec<f64>> = (0..n)
             .map(|i| {
                 (0..n)
@@ -100,7 +97,6 @@ impl SpectralEmbedder {
         let mut eigenvectors: Vec<Vec<f64>> = Vec::with_capacity(k);
 
         for _ev in 0..k {
-            // Initialize with a deterministic vector
             let mut v: Vec<f64> = (0..n).map(|i| ((i + 1) as f64).sin()).collect();
             let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
             if norm > 1e-12 {
@@ -109,7 +105,7 @@ impl SpectralEmbedder {
                 }
             }
 
-            // Deflate: remove components along already-found eigenvectors
+            // Deflate against already-found eigenvectors
             for prev in &eigenvectors {
                 let dot: f64 = v.iter().zip(prev.iter()).map(|(a, b)| a * b).sum();
                 for i in 0..n {
@@ -117,9 +113,7 @@ impl SpectralEmbedder {
                 }
             }
 
-            // Power iteration
             for _ in 0..iterations {
-                // Matrix-vector multiply: w = M * v
                 let mut w = vec![0.0; n];
                 for i in 0..n {
                     for j in 0..n {
@@ -127,7 +121,6 @@ impl SpectralEmbedder {
                     }
                 }
 
-                // Deflate
                 for prev in &eigenvectors {
                     let dot: f64 = w.iter().zip(prev.iter()).map(|(a, b)| a * b).sum();
                     for i in 0..n {
@@ -135,7 +128,6 @@ impl SpectralEmbedder {
                     }
                 }
 
-                // Normalize
                 let norm = w.iter().map(|x| x * x).sum::<f64>().sqrt();
                 if norm < 1e-12 {
                     break;
@@ -153,7 +145,7 @@ impl SpectralEmbedder {
     }
 
     /// Embed a brain graph using spectral decomposition.
-    pub fn embed(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
+    pub fn embed_graph(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
         let n = graph.num_nodes;
         if n < 2 {
             return Err(RuvNeuralError::Embedding(
@@ -164,16 +156,14 @@ impl SpectralEmbedder {
         let adj = graph.adjacency_matrix();
         let laplacian = Self::normalized_laplacian(&adj, n);
 
-        // We skip the first eigenvector (trivial constant) and take the next `dimension`
+        // Skip the trivial first eigenvector and take the next `dimension`
         let num_to_extract = (self.dimension + 1).min(n);
         let eigvecs =
             Self::smallest_eigenvectors(&laplacian, n, num_to_extract, self.power_iterations);
 
-        // Skip the first (trivial) eigenvector and take up to `dimension`
         let useful: Vec<&Vec<f64>> = eigvecs.iter().skip(1).take(self.dimension).collect();
 
-        // Build graph-level embedding from per-node spectral coordinates.
-        // For each eigenvector: [mean, std, min, max] -> 4 features per eigenvector.
+        // Build graph-level embedding: [mean, std, min, max] per eigenvector
         let mut values = Vec::with_capacity(self.dimension * 4);
         for ev in &useful {
             let mean = ev.iter().sum::<f64>() / n as f64;
@@ -187,26 +177,23 @@ impl SpectralEmbedder {
             values.push(max);
         }
 
-        // Pad if we got fewer eigenvectors than requested
+        // Pad if fewer eigenvectors than requested
         while values.len() < self.dimension * 4 {
             values.push(0.0);
         }
 
-        NeuralEmbedding::new(values, graph.timestamp, "spectral")
+        let meta = default_metadata("spectral", graph.atlas);
+        NeuralEmbedding::new(values, graph.timestamp, meta)
     }
 }
 
 impl EmbeddingGenerator for SpectralEmbedder {
-    fn dimension(&self) -> usize {
+    fn embedding_dim(&self) -> usize {
         self.dimension * 4
     }
 
-    fn method_name(&self) -> &str {
-        "spectral"
-    }
-
     fn embed(&self, graph: &BrainGraph) -> Result<NeuralEmbedding> {
-        SpectralEmbedder::embed(self, graph)
+        self.embed_graph(graph)
     }
 }
 
@@ -240,9 +227,8 @@ mod tests {
     }
 
     fn make_two_cluster_graph() -> BrainGraph {
-        // Two dense clusters of 4 nodes each, with a weak link between them
         let mut edges = Vec::new();
-        // Cluster A: nodes 0-3
+        // Cluster A: nodes 0-3 (fully connected)
         for i in 0..4 {
             for j in (i + 1)..4 {
                 edges.push(BrainEdge {
@@ -254,7 +240,7 @@ mod tests {
                 });
             }
         }
-        // Cluster B: nodes 4-7
+        // Cluster B: nodes 4-7 (fully connected)
         for i in 4..8 {
             for j in (i + 1)..8 {
                 edges.push(BrainEdge {
@@ -288,9 +274,6 @@ mod tests {
         let graph = make_complete_graph(6);
         let embedder = SpectralEmbedder::new(3);
         let emb = embedder.embed(&graph).unwrap();
-        // Complete graph: all eigenvectors beyond the first are degenerate
-        // All node positions should be similar -> low std deviation
-        // Check that the embedding has the expected dimension
         assert_eq!(emb.dimension, 3 * 4);
     }
 
@@ -299,9 +282,8 @@ mod tests {
         let graph = make_two_cluster_graph();
         let embedder = SpectralEmbedder::new(2);
         let emb = embedder.embed(&graph).unwrap();
-        // The Fiedler vector (first non-trivial eigenvector) should separate the two clusters.
-        // This means the std of the first eigenvector component should be non-negligible.
-        let fiedler_std = emb.values[1]; // index 1 is std of first eigenvector
+        // Fiedler vector std (index 1) should show cluster separation
+        let fiedler_std = emb.vector[1];
         assert!(
             fiedler_std > 0.01,
             "Fiedler eigenvector should show cluster separation, got std={}",

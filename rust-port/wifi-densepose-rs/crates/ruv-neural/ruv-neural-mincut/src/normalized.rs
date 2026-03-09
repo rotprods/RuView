@@ -2,7 +2,9 @@
 //!
 //! The normalized cut objective is:
 //!
-//!     Ncut(A, B) = cut(A,B) / vol(A) + cut(A,B) / vol(B)
+//! ```text
+//! Ncut(A, B) = cut(A,B) / vol(A) + cut(A,B) / vol(B)
+//! ```
 //!
 //! where vol(S) = sum of degrees of nodes in S.
 //!

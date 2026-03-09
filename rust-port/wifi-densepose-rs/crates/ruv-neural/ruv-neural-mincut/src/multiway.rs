@@ -5,7 +5,7 @@
 //! optimization.
 
 use ruv_neural_core::graph::{BrainEdge, BrainGraph};
-use ruv_neural_core::topology::{MincutResult, MultiPartition};
+use ruv_neural_core::topology::MultiPartition;
 use ruv_neural_core::{Result, RuvNeuralError};
 
 use crate::normalized::normalized_cut;

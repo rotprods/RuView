@@ -117,6 +117,11 @@ impl NvDiamondArray {
         }
     }
 
+    /// Returns the sensor array metadata.
+    pub fn sensor_array(&self) -> &SensorArray {
+        &self.array
+    }
+
     /// Set custom calibration data.
     pub fn with_calibration(mut self, calibration: NvCalibration) -> Result<Self> {
         if calibration.sensitivity_ft_per_count.len() != self.config.num_channels {

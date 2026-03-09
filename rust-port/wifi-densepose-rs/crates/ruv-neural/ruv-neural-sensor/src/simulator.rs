@@ -148,6 +148,11 @@ impl SimulatedSensorArray {
         self.pending_events.push(event);
     }
 
+    /// Returns the sensor array metadata.
+    pub fn sensor_array(&self) -> &SensorArray {
+        &self.array
+    }
+
     /// Add a custom oscillation component to all channels.
     pub fn add_oscillation(&mut self, frequency_hz: f64, amplitude_ft: f64) {
         self.oscillations.push(OscillationComponent {

@@ -10,7 +10,6 @@
 
 use num_complex::Complex;
 use rustfft::FftPlanner;
-use std::f64::consts::PI;
 
 /// Compute the analytic signal via FFT-based Hilbert transform.
 ///
@@ -82,6 +81,7 @@ pub fn instantaneous_amplitude(signal: &[f64]) -> Vec<f64> {
 mod tests {
     use super::*;
     use approx::assert_abs_diff_eq;
+    use std::f64::consts::PI;
 
     #[test]
     fn hilbert_of_cosine_gives_sine() {
