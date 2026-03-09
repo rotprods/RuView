@@ -70,8 +70,12 @@ pub struct AdcConfig {
 
 impl AdcConfig {
     /// Maximum raw ADC value for the configured resolution.
+    ///
+    /// Clamps the result to `i16::MAX` when `resolution_bits >= 16` to
+    /// prevent integer overflow.
     pub fn max_raw_value(&self) -> i16 {
-        ((1u32 << self.resolution_bits) - 1) as i16
+        let bits = self.resolution_bits.min(15);
+        ((1u32 << bits) - 1) as i16
     }
 
     /// Creates a default configuration with a single NV diamond channel.

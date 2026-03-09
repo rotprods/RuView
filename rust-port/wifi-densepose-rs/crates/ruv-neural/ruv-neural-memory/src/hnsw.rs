@@ -1,7 +1,7 @@
 //! Simplified HNSW (Hierarchical Navigable Small World) index for approximate
 //! nearest neighbor search on embedding vectors.
 
-use std::collections::BinaryHeap;
+use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
 
 /// A scored neighbor for use in the priority queue.
@@ -196,6 +196,11 @@ impl HnswIndex {
             return Vec::new();
         }
 
+        // Bounds-check the entry point
+        if self.entry_point >= self.embeddings.len() {
+            return Vec::new();
+        }
+
         let mut current_entry = self.entry_point;
 
         // Greedy search from top layer down to layer 1
@@ -258,7 +263,12 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        let mut visited = vec![false; self.embeddings.len()];
+        // Bounds-check entry against embeddings
+        if entry >= self.embeddings.len() {
+            return Vec::new();
+        }
+
+        let mut visited = HashSet::new();
         let entry_dist = Self::distance(query, &self.embeddings[entry]);
 
         // Candidates: min-heap (closest first)
@@ -275,7 +285,7 @@ impl HnswIndex {
             distance: entry_dist,
         });
 
-        visited[entry] = true;
+        visited.insert(entry);
 
         while let Some(ScoredNode { id: current, distance: current_dist }) = candidates.pop() {
             // If current candidate is further than the worst result and we have enough, stop
@@ -288,8 +298,7 @@ impl HnswIndex {
             // Explore neighbors
             if current < self.layers[layer].len() {
                 for &(neighbor, _) in &self.layers[layer][current] {
-                    if neighbor < visited.len() && !visited[neighbor] {
-                        visited[neighbor] = true;
+                    if neighbor < self.embeddings.len() && visited.insert(neighbor) {
                         let dist = Self::distance(query, &self.embeddings[neighbor]);
 
                         let should_add = results.len() < ef

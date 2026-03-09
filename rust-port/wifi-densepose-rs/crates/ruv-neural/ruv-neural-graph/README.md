@@ -1,97 +1,82 @@
 # ruv-neural-graph
 
-**rUv Neural** -- Brain connectivity graph construction from neural signals.
-
-Part of the [rUv Neural](https://github.com/ruvnet/RuView) workspace for brain topology analysis.
+Brain connectivity graph construction from neural signals with graph-theoretic
+analysis and spectral properties.
 
 ## Overview
 
-`ruv-neural-graph` transforms multi-channel neural time series data into brain connectivity graphs and computes graph-theoretic metrics used in network neuroscience. It supports built-in brain atlases, sliding-window graph construction, spectral analysis, and temporal dynamics tracking.
+`ruv-neural-graph` builds brain connectivity graphs from multi-channel neural
+time series data and connectivity matrices. It provides graph-theoretic metrics
+(efficiency, clustering, centrality), spectral graph properties (Laplacian,
+Fiedler value), brain atlas definitions, petgraph interoperability, and temporal
+dynamics tracking for brain topology research.
 
-## Dependency Diagram
+## Features
 
-```
-ruv-neural-core
-    |
-    v
-ruv-neural-signal
-    |
-    v
-ruv-neural-graph  <-- petgraph
-    |
-    v
-ruv-neural-mincut / ruv-neural-embed / ruv-neural-decoder
-```
-
-## Modules
-
-| Module            | Description                                                  |
-|-------------------|--------------------------------------------------------------|
-| `atlas`           | Brain atlas definitions (Desikan-Killiany 68 regions)        |
-| `constructor`     | Graph construction from connectivity matrices and time series|
-| `petgraph_bridge` | Convert between `BrainGraph` and petgraph types              |
-| `metrics`         | Graph-theoretic metrics (efficiency, clustering, centrality) |
-| `spectral`        | Spectral graph properties (Laplacian, Fiedler value)         |
-| `dynamics`        | Temporal graph dynamics and topology tracking                |
-
-## Graph Metrics
-
-| Metric                  | Function                   | Description                                      |
-|-------------------------|----------------------------|--------------------------------------------------|
-| Global efficiency       | `global_efficiency`        | Average inverse shortest path length              |
-| Local efficiency        | `local_efficiency`         | Average node-level subgraph efficiency            |
-| Clustering coefficient  | `clustering_coefficient`   | Weighted triangle ratio                           |
-| Node degree             | `node_degree`              | Weighted degree of a single node                  |
-| Degree distribution     | `degree_distribution`      | All node degrees                                  |
-| Betweenness centrality  | `betweenness_centrality`   | Fraction of shortest paths through each node      |
-| Graph density           | `graph_density`            | Fraction of possible edges present                |
-| Small-world index       | `small_world_index`        | sigma = (C/C_rand) / (L/L_rand)                  |
-| Modularity              | `modularity`               | Newman modularity Q for a given partition         |
-| Graph Laplacian         | `graph_laplacian`          | L = D - A                                         |
-| Normalized Laplacian    | `normalized_laplacian`     | L_norm = D^{-1/2} L D^{-1/2}                     |
-| Fiedler value           | `fiedler_value`            | Algebraic connectivity (second smallest eigenvalue)|
-| Spectral gap            | `spectral_gap`             | lambda_2 - lambda_1                               |
+- **Graph construction** (`constructor`): Build `BrainGraph` instances from
+  connectivity matrices and multi-channel time series data via `BrainGraphConstructor`
+- **Brain atlases** (`atlas`): Built-in Desikan-Killiany 68-region atlas with
+  support for loading custom atlas definitions
+- **Graph metrics** (`metrics`): Global efficiency, local efficiency, clustering
+  coefficient, betweenness centrality, degree distribution, modularity,
+  graph density, small-world index
+- **Spectral analysis** (`spectral`): Graph Laplacian, normalized Laplacian,
+  Fiedler value (algebraic connectivity), spectral gap
+- **Petgraph bridge** (`petgraph_bridge`): Bidirectional conversion between
+  `BrainGraph` and petgraph `Graph` types
+- **Temporal dynamics** (`dynamics`): `TopologyTracker` for monitoring graph
+  property evolution over time
 
 ## Usage
 
 ```rust
 use ruv_neural_graph::{
-    AtlasType, BrainGraphConstructor, load_atlas,
-    global_efficiency, clustering_coefficient, fiedler_value,
-    to_petgraph, TopologyTracker,
+    BrainGraphConstructor, load_atlas, AtlasType,
+    global_efficiency, clustering_coefficient, modularity,
+    fiedler_value, graph_laplacian,
+    to_petgraph, from_petgraph,
+    TopologyTracker,
 };
-use ruv_neural_core::graph::ConnectivityMetric;
-use ruv_neural_core::signal::FrequencyBand;
 
-// Load the Desikan-Killiany atlas (68 cortical regions)
-let parcellation = load_atlas(AtlasType::DesikanKilliany);
-assert_eq!(parcellation.num_regions(), 68);
+// Construct a brain graph from a connectivity matrix
+let constructor = BrainGraphConstructor::new();
+let graph = constructor.from_matrix(&connectivity_matrix, 0.3, atlas)?;
 
-// Build a graph constructor
-let constructor = BrainGraphConstructor::new(
-    AtlasType::DesikanKilliany,
-    ConnectivityMetric::PhaseLockingValue,
-    FrequencyBand::Alpha,
-)
-.with_threshold(0.1);
+// Compute graph-theoretic metrics
+let efficiency = global_efficiency(&graph);
+let clustering = clustering_coefficient(&graph);
+let mod_score = modularity(&graph);
 
-// Construct a graph from a connectivity matrix
-let connectivity = vec![vec![1.0; 68]; 68]; // example: fully connected
-let graph = constructor.construct_from_matrix(&connectivity, 0.0);
+// Spectral properties
+let laplacian = graph_laplacian(&graph);
+let fiedler = fiedler_value(&graph);
 
-// Compute metrics
-let eff = global_efficiency(&graph);
-let cc = clustering_coefficient(&graph);
-let fv = fiedler_value(&graph);
-
-// Convert to petgraph for advanced algorithms
+// Convert to petgraph for additional algorithms
 let pg = to_petgraph(&graph);
+let brain_graph = from_petgraph(&pg);
 
 // Track topology over time
 let mut tracker = TopologyTracker::new();
-tracker.track(&graph);
-let transitions = tracker.detect_transitions(0.1);
+tracker.update(&graph);
 ```
+
+## API Reference
+
+| Module            | Key Types / Functions                                             |
+|-------------------|-------------------------------------------------------------------|
+| `constructor`     | `BrainGraphConstructor`                                           |
+| `atlas`           | `load_atlas`, `AtlasType`                                         |
+| `metrics`         | `global_efficiency`, `local_efficiency`, `clustering_coefficient`, `betweenness_centrality`, `modularity`, `small_world_index` |
+| `spectral`        | `graph_laplacian`, `normalized_laplacian`, `fiedler_value`, `spectral_gap` |
+| `petgraph_bridge` | `to_petgraph`, `from_petgraph`                                    |
+| `dynamics`        | `TopologyTracker`                                                 |
+
+## Integration
+
+Depends on `ruv-neural-core` for `BrainGraph` and atlas types, and on
+`ruv-neural-signal` for connectivity computation. Feeds graphs into
+`ruv-neural-mincut` for topology partitioning and into `ruv-neural-viz`
+for visualization. Uses `petgraph` for underlying graph data structures.
 
 ## License
 

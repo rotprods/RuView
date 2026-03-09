@@ -10,6 +10,12 @@ pub const RVF_MAGIC: [u8; 4] = [b'R', b'V', b'F', 0x01];
 /// Current RVF format version.
 pub const RVF_VERSION: u8 = 1;
 
+/// Maximum allowed metadata JSON length (16 MiB).
+pub const MAX_METADATA_LEN: u32 = 16 * 1024 * 1024;
+
+/// Maximum allowed payload length when reading (256 MiB).
+pub const MAX_PAYLOAD_LEN: usize = 256 * 1024 * 1024;
+
 /// Data type stored in an RVF file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RvfDataType {
@@ -190,6 +196,13 @@ impl RvfFile {
         let header = RvfHeader::from_bytes(&header_bytes)?;
         header.validate()?;
 
+        if header.metadata_json_len > MAX_METADATA_LEN {
+            return Err(RuvNeuralError::Serialization(format!(
+                "RVF metadata length {} exceeds maximum {}",
+                header.metadata_json_len, MAX_METADATA_LEN
+            )));
+        }
+
         let mut meta_bytes = vec![0u8; header.metadata_json_len as usize];
         reader
             .read_exact(&mut meta_bytes)
@@ -202,6 +215,13 @@ impl RvfFile {
         reader
             .read_to_end(&mut data)
             .map_err(|e| RuvNeuralError::Serialization(e.to_string()))?;
+
+        if data.len() > MAX_PAYLOAD_LEN {
+            return Err(RuvNeuralError::Serialization(format!(
+                "RVF payload length {} exceeds maximum {}",
+                data.len(), MAX_PAYLOAD_LEN
+            )));
+        }
 
         Ok(Self {
             header,

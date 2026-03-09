@@ -9,7 +9,12 @@
 use num_complex::Complex;
 use ruv_neural_core::signal::{FrequencyBand, TimeFrequencyMap};
 use rustfft::FftPlanner;
+use std::cell::RefCell;
 use std::f64::consts::PI;
+
+thread_local! {
+    static FFT_PLANNER: RefCell<FftPlanner<f64>> = RefCell::new(FftPlanner::new());
+}
 
 /// Generate a Hann window of the given length.
 fn hann_window(length: usize) -> Vec<f64> {
@@ -43,8 +48,7 @@ pub fn compute_psd(signal: &[f64], sample_rate: f64, window_size: usize) -> (Vec
 
     let window_power: f64 = window.iter().map(|w| w * w).sum();
 
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(win_size);
+    let fft = FFT_PLANNER.with(|p| p.borrow_mut().plan_fft_forward(win_size));
 
     let num_freqs = win_size / 2 + 1;
     let mut psd_accum = vec![0.0; num_freqs];
@@ -108,8 +112,7 @@ pub fn compute_stft(
     let win_size = window_size.min(n);
     let window = hann_window(win_size);
 
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(win_size);
+    let fft = FFT_PLANNER.with(|p| p.borrow_mut().plan_fft_forward(win_size));
 
     let num_freqs = win_size / 2 + 1;
     let freq_resolution = sample_rate / win_size as f64;

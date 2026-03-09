@@ -10,20 +10,30 @@
 
 use num_complex::Complex;
 use rustfft::FftPlanner;
+use std::cell::RefCell;
+
+thread_local! {
+    static FFT_PLANNER: RefCell<FftPlanner<f64>> = RefCell::new(FftPlanner::new());
+}
 
 /// Compute the analytic signal via FFT-based Hilbert transform.
 ///
 /// Given a real signal x(t), returns the analytic signal z(t) = x(t) + j * H[x](t),
 /// where H[x] is the Hilbert transform of x.
+///
+/// Uses a thread-local cached FftPlanner to avoid re-creating plans on every call.
 pub fn hilbert_transform(signal: &[f64]) -> Vec<Complex<f64>> {
     let n = signal.len();
     if n == 0 {
         return Vec::new();
     }
 
-    let mut planner = FftPlanner::new();
-    let fft_forward = planner.plan_fft_forward(n);
-    let fft_inverse = planner.plan_fft_inverse(n);
+    let (fft_forward, fft_inverse) = FFT_PLANNER.with(|planner| {
+        let mut planner = planner.borrow_mut();
+        let fwd = planner.plan_fft_forward(n);
+        let inv = planner.plan_fft_inverse(n);
+        (fwd, inv)
+    });
 
     // Forward FFT
     let mut spectrum: Vec<Complex<f64>> = signal.iter().map(|&x| Complex::new(x, 0.0)).collect();

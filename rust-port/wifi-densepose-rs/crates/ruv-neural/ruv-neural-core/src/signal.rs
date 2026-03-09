@@ -22,6 +22,11 @@ pub struct MultiChannelTimeSeries {
 impl MultiChannelTimeSeries {
     /// Create a new time series, validating dimensions.
     pub fn new(data: Vec<Vec<f64>>, sample_rate_hz: f64, timestamp_start: f64) -> Result<Self> {
+        if !sample_rate_hz.is_finite() || sample_rate_hz <= 0.0 {
+            return Err(RuvNeuralError::Signal(
+                "sample_rate_hz must be finite and positive".into(),
+            ));
+        }
         let num_channels = data.len();
         if num_channels == 0 {
             return Err(RuvNeuralError::Signal(

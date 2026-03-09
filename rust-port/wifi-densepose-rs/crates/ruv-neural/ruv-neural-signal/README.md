@@ -1,139 +1,89 @@
-# rUv Neural Signal
+# ruv-neural-signal
 
-Digital signal processing for neural magnetic field data.
+Signal processing: filtering, spectral analysis, connectivity metrics, and artifact
+rejection for neural time series data.
 
-Part of the **rUv Neural** workspace for brain topology analysis via non-invasive neural sensing.
+## Overview
 
-## Capabilities
+`ruv-neural-signal` provides a complete digital signal processing pipeline for
+multi-channel neural magnetic field and electrophysiology data. It covers IIR
+filtering in second-order sections form, FFT-based spectral analysis, Hilbert
+transform for instantaneous phase extraction, artifact detection and rejection,
+cross-channel connectivity metrics, and a configurable multi-stage preprocessing
+pipeline.
 
-| Module | Description |
-|--------|-------------|
-| `filter` | Butterworth IIR bandpass, notch, highpass, lowpass filters (SOS form, zero-phase) |
-| `spectral` | Power spectral density (Welch), STFT, band power, spectral entropy, peak frequency |
-| `hilbert` | FFT-based Hilbert transform for instantaneous phase and amplitude |
-| `artifact` | Eye blink, muscle artifact, and cardiac (QRS) detection and rejection |
-| `connectivity` | Phase Locking Value, coherence, imaginary coherence, amplitude envelope correlation |
-| `preprocessing` | Configurable multi-stage pipeline (notch + bandpass + artifact rejection) |
+## Features
 
-## Feature Flags
-
-| Flag | Description |
-|------|-------------|
-| `std` (default) | Standard library support |
-| `simd` | SIMD-accelerated processing (future) |
+- **IIR Filters** (`filter`): Butterworth bandpass, highpass, lowpass, and notch
+  filters in SOS (second-order sections) form for numerical stability
+- **Spectral analysis** (`spectral`): Welch PSD estimation, STFT, band power
+  extraction, spectral entropy, and peak frequency detection
+- **Hilbert transform** (`hilbert`): FFT-based analytic signal for instantaneous
+  phase and amplitude envelope computation
+- **Artifact detection** (`artifact`): Eye blink, muscle artifact, and cardiac
+  artifact detection with configurable rejection
+- **Connectivity metrics** (`connectivity`): Phase locking value (PLV), coherence,
+  imaginary coherence, amplitude envelope correlation (AEC), and all-pairs
+  computation for connectivity matrix construction
+- **Preprocessing pipeline** (`preprocessing`): Configurable multi-stage pipeline
+  chaining filters, artifact rejection, and re-referencing
 
 ## Usage
 
-### Preprocessing Pipeline
-
 ```rust
-use ruv_neural_core::signal::MultiChannelTimeSeries;
-use ruv_neural_signal::PreprocessingPipeline;
+use ruv_neural_signal::{
+    BandpassFilter, PreprocessingPipeline, SignalProcessor,
+    compute_psd, band_power, hilbert_transform, instantaneous_phase,
+    compute_all_pairs, ConnectivityMetric,
+};
+use ruv_neural_core::FrequencyBand;
 
-// Load your multi-channel neural recording
-let raw_data = MultiChannelTimeSeries::new(channels, 1000.0, 0.0).unwrap();
+// Apply a bandpass filter (8-13 Hz alpha band)
+let filter = BandpassFilter::new(8.0, 13.0, 1000.0, 4).unwrap();
+let filtered = filter.apply(&raw_signal);
 
-// Default pipeline: 50 Hz notch -> 1-200 Hz bandpass -> artifact rejection
-let pipeline = PreprocessingPipeline::default_pipeline(1000.0);
-let clean_data = pipeline.process(&raw_data).unwrap();
+// Compute power spectral density (Welch method)
+let psd = compute_psd(&signal, 1000.0, 256, 128);
+let alpha_power = band_power(&psd, 1000.0, 8.0, 13.0);
 
-// Or build a custom pipeline
-let mut custom = PreprocessingPipeline::new(1000.0);
-custom.add_notch(60.0, 2.0);       // 60 Hz for US power grid
-custom.add_bandpass(0.5, 100.0, 4); // Wider passband
-custom.add_artifact_rejection();
-let result = custom.process(&raw_data).unwrap();
-```
-
-### Spectral Analysis
-
-```rust
-use ruv_neural_signal::{compute_psd, band_power, spectral_entropy, peak_frequency};
-use ruv_neural_core::signal::FrequencyBand;
-
-let (freqs, psd) = compute_psd(&signal, 1000.0, 512);
-let alpha_power = band_power(&psd, &freqs, FrequencyBand::Alpha);
-let entropy = spectral_entropy(&psd);
-let peak = peak_frequency(&psd, &freqs);
-```
-
-### Connectivity
-
-```rust
-use ruv_neural_signal::{phase_locking_value, coherence, compute_all_pairs, ConnectivityMetric};
-use ruv_neural_core::signal::FrequencyBand;
-
-// Pairwise PLV in the alpha band
-let plv = phase_locking_value(&ch_a, &ch_b, 1000.0, FrequencyBand::Alpha);
-
-// Full connectivity matrix
-let matrix = compute_all_pairs(&data, ConnectivityMetric::Plv, FrequencyBand::Alpha);
-```
-
-### Hilbert Transform
-
-```rust
-use ruv_neural_signal::{hilbert_transform, instantaneous_phase, instantaneous_amplitude};
-
+// Extract instantaneous phase via Hilbert transform
 let analytic = hilbert_transform(&signal);
-let phase = instantaneous_phase(&signal);
-let envelope = instantaneous_amplitude(&signal);
+let phases = instantaneous_phase(&analytic);
+
+// Compute all-pairs connectivity matrix
+let connectivity_matrix = compute_all_pairs(
+    &multi_channel_data,
+    ConnectivityMetric::PhaseLockingValue,
+);
+
+// Run full preprocessing pipeline
+let pipeline = PreprocessingPipeline::default();
+let clean_data = pipeline.process(&raw_data).unwrap();
 ```
 
-## Mathematical Formulations
+## API Reference
 
-### Butterworth Filter
+| Module          | Key Types / Functions                                           |
+|-----------------|-----------------------------------------------------------------|
+| `filter`        | `BandpassFilter`, `HighpassFilter`, `LowpassFilter`, `NotchFilter`, `SignalProcessor` |
+| `spectral`      | `compute_psd`, `compute_stft`, `band_power`, `spectral_entropy`, `peak_frequency` |
+| `hilbert`       | `hilbert_transform`, `instantaneous_phase`, `instantaneous_amplitude` |
+| `artifact`      | `detect_eye_blinks`, `detect_muscle_artifact`, `detect_cardiac`, `reject_artifacts` |
+| `connectivity`  | `phase_locking_value`, `coherence`, `imaginary_coherence`, `amplitude_envelope_correlation`, `compute_all_pairs` |
+| `preprocessing` | `PreprocessingPipeline`                                         |
 
-The Butterworth filter maximizes flatness in the passband. The magnitude response of an Nth-order Butterworth lowpass filter is:
+## Feature Flags
 
-```
-|H(jw)|^2 = 1 / (1 + (w/wc)^(2N))
-```
+| Feature | Default | Description                      |
+|---------|---------|----------------------------------|
+| `std`   | Yes     | Standard library support         |
+| `simd`  | No      | SIMD-accelerated filter kernels  |
 
-Implemented as cascaded second-order sections (biquads) via bilinear transform for numerical stability. Zero-phase filtering is achieved by forward-backward (filtfilt) application.
+## Integration
 
-### Welch's Method (PSD)
-
-The signal is divided into overlapping segments (50% overlap), each windowed with a Hann window, and the averaged periodogram is computed:
-
-```
-PSD(f) = (1 / (M * fs * W)) * sum_m |X_m(f)|^2
-```
-
-where M is the number of segments, fs is the sample rate, and W is the window power.
-
-### Phase Locking Value
-
-```
-PLV = |<exp(j * (phi_a(t) - phi_b(t)))>|
-```
-
-Instantaneous phases are extracted via the Hilbert transform after bandpass filtering.
-
-### Hilbert Transform
-
-The analytic signal is computed via the FFT:
-1. Compute X(f) = FFT(x(t))
-2. Zero negative frequencies, double positive frequencies
-3. z(t) = IFFT(X_analytic(f))
-
-Instantaneous amplitude = |z(t)|, instantaneous phase = arg(z(t)).
-
-### Spectral Entropy
-
-```
-H = -sum(p_k * log2(p_k))
-```
-
-where p_k = PSD(f_k) / sum(PSD) is the normalized power distribution.
-
-## Performance Notes
-
-- All filters use SOS (second-order sections) cascade for numerical stability with high filter orders
-- Zero-phase filtering (forward-backward) eliminates phase distortion at the cost of 2x computation
-- FFT operations use the `rustfft` crate (pure Rust, no external dependencies)
-- Connectivity matrix computation is O(N^2) in the number of channels; each pair requires bandpass filtering + Hilbert transform
-- The `simd` feature flag is reserved for future SIMD-accelerated inner loops
+Depends on `ruv-neural-core` for `MultiChannelTimeSeries` and `FrequencyBand` types.
+Feeds processed data into `ruv-neural-graph` for connectivity graph construction.
+Uses `rustfft` for FFT operations and `ndarray` for matrix computations.
 
 ## License
 

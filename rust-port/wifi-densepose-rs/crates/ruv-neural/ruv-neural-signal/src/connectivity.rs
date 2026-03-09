@@ -11,10 +11,15 @@ use num_complex::Complex;
 use ruv_neural_core::signal::{FrequencyBand, MultiChannelTimeSeries};
 use rustfft::FftPlanner;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::f64::consts::PI;
 
 use crate::filter::BandpassFilter;
 use crate::hilbert::hilbert_transform;
+
+thread_local! {
+    static FFT_PLANNER: RefCell<FftPlanner<f64>> = RefCell::new(FftPlanner::new());
+}
 
 /// Type of connectivity metric to compute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +28,22 @@ pub enum ConnectivityMetric {
     Plv,
     /// Amplitude envelope correlation.
     Aec,
+}
+
+/// Returns `true` if any sample in `data` is NaN or infinite.
+pub fn contains_non_finite(data: &[f64]) -> bool {
+    data.iter().any(|x| !x.is_finite())
+}
+
+/// Validate that signal data contains no NaN or Inf values.
+///
+/// Returns `Ok(())` if all values are finite, or an error otherwise.
+pub fn validate_signal_finite(data: &[f64], label: &str) -> std::result::Result<(), String> {
+    if contains_non_finite(data) {
+        Err(format!("{label} contains NaN or infinite values"))
+    } else {
+        Ok(())
+    }
 }
 
 /// Compute the Phase Locking Value (PLV) between two signals.
@@ -48,6 +69,11 @@ pub fn phase_locking_value(
 ) -> f64 {
     let n = signal_a.len().min(signal_b.len());
     if n < 4 {
+        return 0.0;
+    }
+
+    // Reject NaN/Inf at the pipeline entry point
+    if contains_non_finite(&signal_a[..n]) || contains_non_finite(&signal_b[..n]) {
         return 0.0;
     }
 
@@ -97,8 +123,7 @@ pub fn coherence(
     let window = hann_window(window_size);
     let num_freqs = window_size / 2 + 1;
 
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(window_size);
+    let fft = FFT_PLANNER.with(|p| p.borrow_mut().plan_fft_forward(window_size));
 
     let mut saa = vec![0.0; num_freqs];
     let mut sbb = vec![0.0; num_freqs];
@@ -171,8 +196,7 @@ pub fn imaginary_coherence(
     let window = hann_window(window_size);
     let num_freqs = window_size / 2 + 1;
 
-    let mut planner = FftPlanner::new();
-    let fft = planner.plan_fft_forward(window_size);
+    let fft = FFT_PLANNER.with(|p| p.borrow_mut().plan_fft_forward(window_size));
 
     let mut saa = vec![0.0; num_freqs];
     let mut sbb = vec![0.0; num_freqs];
@@ -238,6 +262,11 @@ pub fn amplitude_envelope_correlation(
         return 0.0;
     }
 
+    // Reject NaN/Inf at the pipeline entry point
+    if contains_non_finite(&signal_a[..n]) || contains_non_finite(&signal_b[..n]) {
+        return 0.0;
+    }
+
     let (low, high) = band.range_hz();
     let bp = BandpassFilter::new(2, low, high, sample_rate);
 
@@ -251,6 +280,11 @@ pub fn amplitude_envelope_correlation(
 }
 
 /// Compute a full connectivity matrix for all channel pairs.
+///
+/// Pre-computes filtered analytic signals (or amplitude envelopes) for all
+/// channels once, then computes pairwise metrics. This eliminates redundant
+/// FFT/Hilbert work: for N channels, each channel is transformed once instead
+/// of (N-1) times.
 ///
 /// # Arguments
 /// * `data` - Multi-channel time series
@@ -268,19 +302,66 @@ pub fn compute_all_pairs(
     let sr = data.sample_rate_hz;
     let mut matrix = vec![vec![0.0; nc]; nc];
 
-    for i in 0..nc {
-        matrix[i][i] = 1.0; // Self-connectivity is 1.0
-        for j in (i + 1)..nc {
-            let val = match metric {
-                ConnectivityMetric::Plv => {
-                    phase_locking_value(&data.data[i], &data.data[j], sr, band)
+    if nc == 0 {
+        return matrix;
+    }
+
+    let (low, high) = band.range_hz();
+    let n = data.data[0].len();
+
+    match metric {
+        ConnectivityMetric::Plv => {
+            // Pre-compute analytic signals for all channels once.
+            let bp = BandpassFilter::new(2, low, high, sr);
+            let analytic_signals: Vec<Vec<Complex<f64>>> = data
+                .data
+                .iter()
+                .map(|ch| {
+                    let filtered = bp.apply(&ch[..n.min(ch.len())]);
+                    hilbert_transform(&filtered)
+                })
+                .collect();
+
+            for i in 0..nc {
+                matrix[i][i] = 1.0;
+                for j in (i + 1)..nc {
+                    let len = analytic_signals[i].len().min(analytic_signals[j].len());
+                    if len < 4 {
+                        continue;
+                    }
+                    let mut sum = Complex::new(0.0, 0.0);
+                    for k in 0..len {
+                        let phase_a = analytic_signals[i][k].im.atan2(analytic_signals[i][k].re);
+                        let phase_b = analytic_signals[j][k].im.atan2(analytic_signals[j][k].re);
+                        let diff = phase_a - phase_b;
+                        sum += Complex::new(diff.cos(), diff.sin());
+                    }
+                    let val = (sum / len as f64).norm();
+                    matrix[i][j] = val;
+                    matrix[j][i] = val;
                 }
-                ConnectivityMetric::Aec => {
-                    amplitude_envelope_correlation(&data.data[i], &data.data[j], sr, band)
+            }
+        }
+        ConnectivityMetric::Aec => {
+            // Pre-compute amplitude envelopes for all channels once.
+            let bp = BandpassFilter::new(2, low, high, sr);
+            let envelopes: Vec<Vec<f64>> = data
+                .data
+                .iter()
+                .map(|ch| {
+                    let filtered = bp.apply(&ch[..n.min(ch.len())]);
+                    crate::hilbert::instantaneous_amplitude(&filtered)
+                })
+                .collect();
+
+            for i in 0..nc {
+                matrix[i][i] = 1.0;
+                for j in (i + 1)..nc {
+                    let val = pearson_correlation(&envelopes[i], &envelopes[j]);
+                    matrix[i][j] = val;
+                    matrix[j][i] = val;
                 }
-            };
-            matrix[i][j] = val;
-            matrix[j][i] = val;
+            }
         }
     }
 

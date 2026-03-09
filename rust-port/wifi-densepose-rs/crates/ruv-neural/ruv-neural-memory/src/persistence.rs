@@ -22,7 +22,7 @@ struct StoreSnapshot {
 /// Save a memory store to disk using bincode serialization.
 pub fn save_store(store: &NeuralMemoryStore, path: &str) -> Result<()> {
     let snapshot = StoreSnapshot {
-        embeddings: store.embeddings().to_vec(),
+        embeddings: store.embeddings_iter().cloned().collect(),
         capacity: store.capacity(),
     };
 
@@ -53,7 +53,7 @@ pub fn load_store(path: &str) -> Result<NeuralMemoryStore> {
 
 /// Save a memory store in RVF (RuVector File) format.
 pub fn save_rvf(store: &NeuralMemoryStore, path: &str) -> Result<()> {
-    let embeddings = store.embeddings();
+    let embeddings: Vec<NeuralEmbedding> = store.embeddings_iter().cloned().collect();
     let embedding_dim = embeddings.first().map(|e| e.dimension as u32).unwrap_or(0);
 
     let mut rvf = RvfFile::new(RvfDataType::NeuralEmbedding);
@@ -74,7 +74,7 @@ pub fn save_rvf(store: &NeuralMemoryStore, path: &str) -> Result<()> {
     rvf.metadata = metadata;
 
     // Serialize embeddings as the binary payload
-    let data = bincode::serialize(embeddings)
+    let data = bincode::serialize(&embeddings)
         .map_err(|e| RuvNeuralError::Serialization(format!("bincode encode: {}", e)))?;
     rvf.data = data;
 

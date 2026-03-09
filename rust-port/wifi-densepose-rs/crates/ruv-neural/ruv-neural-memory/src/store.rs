@@ -1,6 +1,7 @@
 //! In-memory embedding store with brute-force nearest neighbor search.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 
 use ruv_neural_core::embedding::NeuralEmbedding;
 use ruv_neural_core::error::Result;
@@ -8,32 +9,49 @@ use ruv_neural_core::topology::CognitiveState;
 use ruv_neural_core::traits::NeuralMemory;
 
 /// In-memory store for neural embeddings with index-based retrieval.
+///
+/// Uses a VecDeque for O(1) front eviction instead of Vec::remove(0) which is O(n).
 #[derive(Debug, Clone)]
 pub struct NeuralMemoryStore {
     /// All stored embeddings in insertion order.
-    embeddings: Vec<NeuralEmbedding>,
+    embeddings: VecDeque<NeuralEmbedding>,
     /// Maps subject_id to the indices of their embeddings.
     index: HashMap<String, Vec<usize>>,
     /// Maximum number of embeddings to store.
     capacity: usize,
+    /// Running offset: total number of embeddings ever evicted.
+    /// Logical index = physical index + evicted_count.
+    evicted_count: usize,
 }
 
 impl NeuralMemoryStore {
     /// Create a new store with the given capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
-            embeddings: Vec::with_capacity(capacity.min(1024)),
+            embeddings: VecDeque::with_capacity(capacity.min(1024)),
             index: HashMap::new(),
             capacity,
+            evicted_count: 0,
         }
     }
 
-    /// Store an embedding, returning its index.
+    /// Store an embedding, returning its physical index within the deque.
     ///
     /// If the store is at capacity, the oldest embedding is evicted.
+    /// Returns an error if the embedding dimension is inconsistent with
+    /// previously stored embeddings.
     pub fn store(&mut self, embedding: NeuralEmbedding) -> Result<usize> {
+        // Check dimension consistency with existing embeddings
+        if let Some(first) = self.embeddings.front() {
+            if embedding.dimension != first.dimension {
+                return Err(ruv_neural_core::error::RuvNeuralError::DimensionMismatch {
+                    expected: first.dimension,
+                    got: embedding.dimension,
+                });
+            }
+        }
+
         if self.embeddings.len() >= self.capacity {
-            // Evict the oldest embedding
             self.evict_oldest();
         }
 
@@ -46,7 +64,7 @@ impl NeuralMemoryStore {
                 .push(idx);
         }
 
-        self.embeddings.push(embedding);
+        self.embeddings.push_back(embedding);
         Ok(idx)
     }
 
@@ -111,8 +129,16 @@ impl NeuralMemoryStore {
     }
 
     /// Access all embeddings (for serialization).
-    pub fn embeddings(&self) -> &[NeuralEmbedding] {
-        &self.embeddings
+    ///
+    /// Returns the two slices of the VecDeque as a pair. For contiguous access,
+    /// callers can use `make_contiguous()` on a mutable reference, or iterate.
+    pub fn embeddings_iter(&self) -> impl Iterator<Item = &NeuralEmbedding> {
+        self.embeddings.iter()
+    }
+
+    /// Access all embeddings as a slice pair (VecDeque may be non-contiguous).
+    pub fn embeddings(&self) -> Vec<&NeuralEmbedding> {
+        self.embeddings.iter().collect()
     }
 
     /// Get the capacity.
@@ -120,27 +146,34 @@ impl NeuralMemoryStore {
         self.capacity
     }
 
-    /// Evict the oldest embedding and rebuild indices.
+    /// Evict the oldest embedding with O(1) pop and incremental index update.
+    ///
+    /// Instead of rebuilding the entire index, we remove the evicted entry
+    /// from the subject index and decrement all remaining indices by 1.
     fn evict_oldest(&mut self) {
         if self.embeddings.is_empty() {
             return;
         }
-        self.embeddings.remove(0);
-        // Rebuild index after eviction since indices shifted
-        self.rebuild_index();
-    }
 
-    /// Rebuild the subject index from scratch.
-    fn rebuild_index(&mut self) {
-        self.index.clear();
-        for (i, emb) in self.embeddings.iter().enumerate() {
-            if let Some(ref subject_id) = emb.metadata.subject_id {
-                self.index
-                    .entry(subject_id.clone())
-                    .or_default()
-                    .push(i);
+        let evicted = self.embeddings.pop_front().unwrap();
+        self.evicted_count += 1;
+
+        // Remove index 0 from the evicted embedding's subject entry.
+        if let Some(ref subject_id) = evicted.metadata.subject_id {
+            if let Some(indices) = self.index.get_mut(subject_id) {
+                indices.retain(|&i| i != 0);
             }
         }
+
+        // Decrement all indices by 1 since front was removed.
+        for indices in self.index.values_mut() {
+            for idx in indices.iter_mut() {
+                *idx -= 1;
+            }
+        }
+
+        // Clean up empty entries.
+        self.index.retain(|_, v| !v.is_empty());
     }
 }
 

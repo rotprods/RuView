@@ -1,32 +1,44 @@
-# rUv Neural WASM
+# ruv-neural-wasm
 
-WebAssembly bindings for browser-based brain topology visualization. Part of the **rUv Neural** suite.
+WebAssembly bindings for browser-based brain topology visualization.
 
 ## Overview
 
-`ruv-neural-wasm` exposes the core brain graph analysis pipeline to JavaScript via `wasm-bindgen`. It provides lightweight, WASM-compatible implementations of graph algorithms (Stoer-Wagner mincut, spectral embedding, topology metrics) that run entirely in the browser without server round-trips.
+`ruv-neural-wasm` provides JavaScript-callable functions for creating, analyzing,
+and visualizing brain connectivity graphs directly in the browser. It wraps
+`ruv-neural-core` types with `wasm-bindgen` and implements lightweight
+WASM-compatible versions of graph algorithms (Stoer-Wagner mincut, spectral
+embedding via power iteration, topology metrics, and cognitive state decoding)
+that run without heavy native dependencies.
+
+**Note:** This crate is excluded from the default workspace build. Build it
+separately targeting `wasm32-unknown-unknown`.
+
+## Features
+
+- **Graph parsing**: `create_brain_graph` -- parse `BrainGraph` from JSON
+- **Minimum cut**: `compute_mincut` -- Stoer-Wagner on graphs up to 500 nodes
+- **Topology metrics**: `compute_topology_metrics` -- density, efficiency,
+  modularity, Fiedler value, entropy, module count
+- **Spectral embedding**: `embed_graph` -- power iteration on normalized Laplacian
+  (no LAPACK dependency)
+- **State decoding**: `decode_state` -- threshold-based cognitive state classification
+  from topology metrics
+- **RVF I/O**: `load_rvf` / `export_rvf` -- read and write RuVector binary files
+- **Streaming** (`streaming`): WebSocket-compatible streaming data processor
+- **Visualization data** (`viz_data`): Data structures for D3.js and Three.js rendering
 
 ## Build
 
-Requires [wasm-pack](https://rustwasm.github.io/wasm-pack/installer/):
-
 ```bash
-# Build for browser (ES modules)
-wasm-pack build --target web
+# Requires wasm-pack or cargo with wasm32 target
+cargo build -p ruv-neural-wasm --target wasm32-unknown-unknown --release
 
-# Build for bundler (webpack, vite, etc.)
-wasm-pack build --target bundler
-
-# Build for Node.js
-wasm-pack build --target nodejs
-
-# Native check (no WASM target required)
-cargo check -p ruv-neural-wasm
+# Or with wasm-pack for npm-ready output
+wasm-pack build ruv-neural-wasm --target web
 ```
 
-## JavaScript Usage
-
-### Basic Graph Analysis
+## Usage (JavaScript)
 
 ```javascript
 import init, {
@@ -35,173 +47,56 @@ import init, {
   compute_topology_metrics,
   embed_graph,
   decode_state,
-  to_viz_graph,
+  export_rvf,
   version,
-} from "./pkg/ruv_neural_wasm.js";
+} from './ruv_neural_wasm.js';
 
 await init();
 
-console.log("rUv Neural WASM v" + version());
-
-// Define a brain connectivity graph
 const graphJson = JSON.stringify({
-  num_nodes: 4,
+  num_nodes: 3,
   edges: [
-    { source: 0, target: 1, weight: 0.9, metric: "Coherence", frequency_band: "Alpha" },
-    { source: 1, target: 2, weight: 0.3, metric: "Coherence", frequency_band: "Alpha" },
-    { source: 2, target: 3, weight: 0.8, metric: "Coherence", frequency_band: "Alpha" },
-    { source: 0, target: 3, weight: 0.7, metric: "Coherence", frequency_band: "Alpha" },
+    { source: 0, target: 1, weight: 0.8, metric: "Coherence", frequency_band: "Alpha" },
+    { source: 1, target: 2, weight: 0.5, metric: "Coherence", frequency_band: "Beta" },
   ],
-  timestamp: Date.now() / 1000,
+  timestamp: 0.0,
   window_duration_s: 1.0,
-  atlas: { Custom: 4 },
+  atlas: { Custom: 3 },
 });
 
-// Parse and validate
 const graph = create_brain_graph(graphJson);
-
-// Compute minimum cut
 const mincut = compute_mincut(graphJson);
-console.log("Min-cut value:", mincut.cut_value);
-console.log("Partition A:", mincut.partition_a);
-console.log("Partition B:", mincut.partition_b);
-
-// Compute topology metrics
 const metrics = compute_topology_metrics(graphJson);
-console.log("Modularity:", metrics.modularity);
-console.log("Fiedler value:", metrics.fiedler_value);
-console.log("Global efficiency:", metrics.global_efficiency);
-
-// Decode cognitive state
-const metricsJson = JSON.stringify(metrics);
-const state = decode_state(metricsJson);
-console.log("Cognitive state:", state);
-
-// Generate spectral embedding (2D)
 const embedding = embed_graph(graphJson, 2);
-console.log("Embedding dimension:", embedding.dimension);
-```
-
-### D3.js Visualization
-
-```javascript
-import { to_viz_graph } from "./pkg/ruv_neural_wasm.js";
-
-const vizGraph = to_viz_graph(graphJson);
-
-// vizGraph.nodes: [{ id, label, x, y, z, group, size, color }, ...]
-// vizGraph.edges: [{ source, target, weight, is_cut, color }, ...]
-// vizGraph.partitions: [[nodeIds...], [nodeIds...]] or null
-// vizGraph.cut_edges: [edgeIndices...] or null
-
-// Use with D3 force simulation
-const simulation = d3
-  .forceSimulation(vizGraph.nodes)
-  .force("link", d3.forceLink(vizGraph.edges).id((d) => d.id))
-  .force("charge", d3.forceManyBody().strength(-100))
-  .force("center", d3.forceCenter(width / 2, height / 2));
-
-// Color nodes by partition group
-svg
-  .selectAll("circle")
-  .data(vizGraph.nodes)
-  .enter()
-  .append("circle")
-  .attr("r", (d) => d.size * 5)
-  .attr("fill", (d) => d.color);
-
-// Highlight cut edges in red
-svg
-  .selectAll("line")
-  .data(vizGraph.edges)
-  .enter()
-  .append("line")
-  .attr("stroke", (d) => d.color)
-  .attr("stroke-width", (d) => (d.is_cut ? 3 : 1));
-```
-
-### WebSocket Streaming
-
-```javascript
-import { StreamProcessor } from "./pkg/ruv_neural_wasm.js";
-
-// Create processor: 256-sample window, 64-sample hop
-const processor = new StreamProcessor(256, 64);
-
-const ws = new WebSocket("ws://localhost:8080/neural-stream");
-
-ws.onmessage = (event) => {
-  const samples = new Float64Array(event.data);
-  const stats = processor.push_samples(samples);
-
-  if (stats) {
-    console.log(`Window ${stats.window_index}: mean=${stats.mean.toFixed(3)}`);
-    updateVisualization(stats);
-  }
-};
-
-// Reset when switching sessions
-function resetStream() {
-  processor.reset();
-}
-```
-
-### RVF File I/O
-
-```javascript
-import { load_rvf, export_rvf } from "./pkg/ruv_neural_wasm.js";
-
-// Export graph to RVF binary
 const rvfBytes = export_rvf(graphJson);
-
-// Save as file download
-const blob = new Blob([rvfBytes], { type: "application/octet-stream" });
-const url = URL.createObjectURL(blob);
-
-// Load RVF from file input
-const fileInput = document.getElementById("rvf-file");
-fileInput.onchange = async (e) => {
-  const buffer = await e.target.files[0].arrayBuffer();
-  const rvf = load_rvf(new Uint8Array(buffer));
-  console.log("Loaded RVF:", rvf.header.data_type);
-};
+console.log('Version:', version());
 ```
 
 ## API Reference
 
-| Function | Description |
-|----------|-------------|
-| `create_brain_graph(json)` | Parse JSON into a BrainGraph |
-| `compute_mincut(json)` | Stoer-Wagner minimum cut (max 500 nodes) |
-| `compute_topology_metrics(json)` | Density, efficiency, modularity, Fiedler, entropy |
-| `embed_graph(json, dim)` | Spectral embedding via power iteration |
-| `decode_state(json)` | Classify cognitive state from metrics |
-| `to_viz_graph(json)` | Convert to D3.js/Three.js-ready visualization data |
-| `load_rvf(bytes)` | Parse RVF binary file |
-| `export_rvf(json)` | Serialize graph to RVF binary |
-| `version()` | Get crate version string |
-| `StreamProcessor` | Sliding-window streaming data processor |
+| Function                   | Description                                       |
+|----------------------------|---------------------------------------------------|
+| `create_brain_graph(json)` | Parse JSON into a BrainGraph JS object             |
+| `compute_mincut(json)`     | Stoer-Wagner minimum cut, returns MincutResult     |
+| `compute_topology_metrics(json)` | Compute TopologyMetrics for a graph          |
+| `embed_graph(json, dim)`   | Spectral embedding via power iteration             |
+| `decode_state(json)`       | Classify CognitiveState from TopologyMetrics       |
+| `load_rvf(bytes)`          | Parse RVF binary data into JS object               |
+| `export_rvf(json)`         | Serialize BrainGraph to RVF bytes                  |
+| `version()`                | Return crate version string                        |
 
-## Browser Compatibility
+| Module      | Key Types                                                 |
+|-------------|-----------------------------------------------------------|
+| `graph_wasm`| `wasm_mincut`, `wasm_embed`, `wasm_topology_metrics`, `wasm_decode` |
+| `streaming` | WebSocket streaming data processor                        |
+| `viz_data`  | D3.js / Three.js visualization structures                 |
 
-- Chrome 57+ / Edge 79+
-- Firefox 52+
-- Safari 11+
-- All modern browsers with WebAssembly support
+## Integration
 
-## Graph Size Limits
-
-The Stoer-Wagner minimum cut algorithm runs in O(V^3) time. For browser performance:
-
-| Nodes | Approximate Time |
-|-------|-----------------|
-| 68 (DK atlas) | < 10ms |
-| 100 (Schaefer) | < 50ms |
-| 200 (Schaefer) | < 500ms |
-| 400 (Schaefer) | ~2-5s |
-| 500 (max) | ~5-10s |
-
-For larger graphs, use the native `ruv-neural-mincut` crate with server-side computation.
+Depends on `ruv-neural-core` for `BrainGraph`, `TopologyMetrics`, `RvfFile`,
+and `CognitiveState` types. Uses `wasm-bindgen` and `serde-wasm-bindgen` for
+JS interop. Designed for browser-based dashboards and real-time visualization
+applications.
 
 ## License
 

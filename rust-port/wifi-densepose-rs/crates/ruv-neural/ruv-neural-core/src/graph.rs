@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::brain::Atlas;
+use crate::error::{Result, RuvNeuralError};
 use crate::signal::FrequencyBand;
 
 /// Connectivity metric used to compute edge weights.
@@ -55,6 +56,37 @@ pub struct BrainGraph {
 }
 
 impl BrainGraph {
+    /// Validate graph integrity: edge bounds, weight finiteness, no self-loops.
+    pub fn validate(&self) -> Result<()> {
+        for (i, edge) in self.edges.iter().enumerate() {
+            if edge.source >= self.num_nodes {
+                return Err(RuvNeuralError::Graph(format!(
+                    "Edge {i}: source {} out of bounds (num_nodes={})",
+                    edge.source, self.num_nodes
+                )));
+            }
+            if edge.target >= self.num_nodes {
+                return Err(RuvNeuralError::Graph(format!(
+                    "Edge {i}: target {} out of bounds (num_nodes={})",
+                    edge.target, self.num_nodes
+                )));
+            }
+            if edge.source == edge.target {
+                return Err(RuvNeuralError::Graph(format!(
+                    "Edge {i}: self-loop on node {}",
+                    edge.source
+                )));
+            }
+            if !edge.weight.is_finite() {
+                return Err(RuvNeuralError::Graph(format!(
+                    "Edge {i}: non-finite weight {}",
+                    edge.weight
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Build a dense adjacency matrix (num_nodes x num_nodes).
     /// For duplicate edges, the last one wins.
     pub fn adjacency_matrix(&self) -> Vec<Vec<f64>> {

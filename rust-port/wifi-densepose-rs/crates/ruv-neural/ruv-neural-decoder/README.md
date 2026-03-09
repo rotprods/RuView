@@ -1,85 +1,92 @@
-# rUv Neural Decoder
+# ruv-neural-decoder
 
 Cognitive state classification and BCI decoding from neural topology embeddings.
 
-Part of the **rUv Neural** brain-computer interface platform.
+## Overview
 
-## Decoders
+`ruv-neural-decoder` classifies cognitive states from brain graph embeddings and
+topology metrics. It provides multiple decoding strategies -- KNN classification
+from labeled exemplars, threshold-based rule systems, temporal transition detection,
+and clinical biomarker scoring -- plus an ensemble pipeline that combines all
+strategies for robust real-time brain-computer interface (BCI) output.
 
-| Decoder | Description |
-|---------|-------------|
-| **KnnDecoder** | K-nearest neighbor classification using stored labeled embeddings with inverse-distance weighting |
-| **ThresholdDecoder** | Rule-based classification from topology metric ranges (mincut, modularity, efficiency, entropy) |
-| **TransitionDecoder** | Detects cognitive state transitions by matching topology delta patterns against a sliding window |
-| **ClinicalScorer** | Biomarker detection via z-score deviation from a learned healthy baseline population |
-| **DecoderPipeline** | End-to-end ensemble combining all decoders with configurable weights and clinical scoring |
+## Features
 
-## Pipeline Architecture
-
-```
-NeuralEmbedding ──> KnnDecoder ─────────┐
-                                        │
-TopologyMetrics ──> ThresholdDecoder ────┤── Weighted Vote ──> DecoderOutput
-                │                       │       state, confidence
-                ├─> TransitionDecoder ──┘       transition
-                │                               brain_health_index
-                └─> ClinicalScorer ─────────>   clinical_flags
-```
+- **KNN decoder** (`knn_decoder`): K-nearest neighbor classification using stored
+  labeled embeddings from `ruv-neural-memory`; supports configurable k and distance
+  metrics
+- **Threshold decoder** (`threshold_decoder`): Rule-based classification from
+  topology metric ranges (mincut value, modularity, efficiency, Fiedler value)
+  with configurable `TopologyThreshold` bounds per cognitive state
+- **Transition decoder** (`transition_decoder`): Detects cognitive state transitions
+  from temporal topology dynamics; outputs `StateTransition` events matching
+  known `TransitionPattern` templates
+- **Clinical scorer** (`clinical`): `ClinicalScorer` for biomarker detection via
+  deviation from healthy baseline distributions; flags abnormal topology patterns
+- **Ensemble pipeline** (`pipeline`): `DecoderPipeline` combining all decoder
+  strategies with confidence-weighted voting; produces `DecoderOutput` with
+  classified state, confidence score, and contributing decoder votes
 
 ## Usage
 
 ```rust
-use ruv_neural_decoder::{DecoderPipeline, TopologyThreshold};
+use ruv_neural_decoder::{
+    KnnDecoder, ThresholdDecoder, TopologyThreshold,
+    TransitionDecoder, ClinicalScorer, DecoderPipeline, DecoderOutput,
+};
 use ruv_neural_core::topology::{CognitiveState, TopologyMetrics};
 
-// Build a pipeline with all decoders
-let mut pipeline = DecoderPipeline::new()
-    .with_knn(5)
-    .with_thresholds()
-    .with_transitions(10)
-    .with_clinical(baseline_metrics, baseline_std);
+// Threshold-based decoding from topology metrics
+let mut decoder = ThresholdDecoder::new();
+decoder.add_threshold(TopologyThreshold {
+    state: CognitiveState::Focused,
+    min_modularity: 0.3,
+    max_modularity: 0.5,
+    min_efficiency: 0.6,
+    ..Default::default()
+});
+let state = decoder.decode(&metrics);
 
-// Train the KNN decoder
-pipeline.knn_mut().unwrap().train(labeled_embeddings);
+// KNN-based decoding from embeddings
+let mut knn = KnnDecoder::new(5); // k=5
+knn.add_exemplar(embedding, CognitiveState::Rest);
+let predicted = knn.classify(&query_embedding);
 
-// Configure threshold ranges
-pipeline.threshold_mut().unwrap().set_threshold(
-    CognitiveState::Focused,
-    TopologyThreshold {
-        mincut_range: (7.0, 9.0),
-        modularity_range: (0.5, 0.7),
-        efficiency_range: (0.4, 0.6),
-        entropy_range: (2.5, 3.5),
-    },
-);
-
-// Decode
-let output = pipeline.decode(&embedding, &metrics);
-println!("State: {:?} (confidence: {:.2})", output.state, output.confidence);
-
-if let Some(health) = output.brain_health_index {
-    println!("Brain health: {:.2}", health);
+// Transition detection from temporal sequences
+let mut transition_decoder = TransitionDecoder::new();
+if let Some(transition) = transition_decoder.check(&current_metrics) {
+    println!("Transition: {:?} -> {:?}", transition.from, transition.to);
 }
-for flag in &output.clinical_flags {
-    println!("WARNING: {}", flag);
-}
+
+// Full ensemble pipeline
+let mut pipeline = DecoderPipeline::new();
+let output: DecoderOutput = pipeline.decode(&metrics, &embedding);
+println!("State: {:?}, confidence: {:.2}", output.state, output.confidence);
 ```
 
-## Clinical Applications
+## API Reference
 
-The `ClinicalScorer` provides research-grade biomarker detection for:
+| Module               | Key Types                                                  |
+|----------------------|------------------------------------------------------------|
+| `knn_decoder`        | `KnnDecoder`                                               |
+| `threshold_decoder`  | `ThresholdDecoder`, `TopologyThreshold`                    |
+| `transition_decoder` | `TransitionDecoder`, `StateTransition`, `TransitionPattern`|
+| `clinical`           | `ClinicalScorer`                                           |
+| `pipeline`           | `DecoderPipeline`, `DecoderOutput`                         |
 
-- **Alzheimer's disease**: Detects network fragmentation (reduced efficiency, increased modularity, reduced mincut)
-- **Epilepsy**: Detects hypersynchrony (increased mincut, decreased modularity, increased local efficiency)
-- **Depression**: Detects connectivity weakening (reduced efficiency, reduced Fiedler value, altered entropy)
-- **Brain Health Index**: Composite score from 0 (severe abnormality) to 1 (healthy baseline)
+## Feature Flags
 
-**Note**: These scores are intended for research use only. Clinical diagnosis requires professional medical evaluation.
+| Feature | Default | Description                      |
+|---------|---------|----------------------------------|
+| `std`   | Yes     | Standard library support         |
+| `wasm`  | No      | WASM-compatible decoding         |
 
-## Features
+## Integration
 
-- `std` (default) — Standard library support
-- `wasm` — WebAssembly target support
+Depends on `ruv-neural-core` for `CognitiveState`, `TopologyMetrics`, and
+`NeuralEmbedding` types. Consumes embeddings from `ruv-neural-embed` and
+topology results from `ruv-neural-mincut`. The KNN decoder can query stored
+exemplars from `ruv-neural-memory`.
 
 ## License
 

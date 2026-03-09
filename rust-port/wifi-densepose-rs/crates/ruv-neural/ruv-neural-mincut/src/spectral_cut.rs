@@ -263,6 +263,8 @@ pub fn cheeger_bound(fiedler_value: f64) -> (f64, f64) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Largest eigenvalue of a symmetric matrix via power iteration.
+///
+/// Terminates early when the eigenvalue change between iterations is below 1e-12.
 fn largest_eigenvalue(mat: &[Vec<f64>], n: usize, max_iter: usize) -> f64 {
     let mut v: Vec<f64> = (0..n).map(|i| (i as f64 + 0.5).cos()).collect();
     normalize(&mut v);
@@ -275,9 +277,15 @@ fn largest_eigenvalue(mat: &[Vec<f64>], n: usize, max_iter: usize) -> f64 {
                 w[i] += mat[i][j] * v[j];
             }
         }
-        eigenvalue = dot(&w, &v);
+        let new_eigenvalue = dot(&w, &v);
         normalize(&mut w);
         v = w;
+
+        if (new_eigenvalue - eigenvalue).abs() < 1e-12 {
+            eigenvalue = new_eigenvalue;
+            break;
+        }
+        eigenvalue = new_eigenvalue;
     }
     eigenvalue
 }
