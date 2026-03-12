@@ -64,7 +64,7 @@ export class PoseDecoder {
   constructor(embeddingDim = 128) {
     this.embeddingDim = embeddingDim;
     this.smoothedKeypoints = null;
-    this.smoothingFactor = 0.45; // Lower = more responsive to movement
+    this.smoothingFactor = 0.25; // Low = responsive to real movement
     this._time = 0;
 
     // Through-wall tracking state
@@ -73,12 +73,19 @@ export class PoseDecoder {
     this._ghostConfidence = 0;
     this._ghostVelocity = { x: 0, y: 0 };
 
-    // Arm tracking history (smoothed positions)
-    this._leftArmY = 0.5;
-    this._rightArmY = 0.5;
-    this._leftArmX = 0;
-    this._rightArmX = 0;
-    this._headOffsetX = 0;
+    // Zone centroid tracking (normalized 0-1 positions)
+    this._headCx = 0.5;
+    this._headCy = 0.15;
+    this._leftArmCx = 0.3;
+    this._leftArmCy = 0.35;
+    this._rightArmCx = 0.7;
+    this._rightArmCy = 0.35;
+    this._leftLegCx = 0.4;
+    this._leftLegCy = 0.8;
+    this._rightLegCx = 0.6;
+    this._rightLegCy = 0.8;
+    this._torsoCx = 0.5;
+    this._torsoCy = 0.45;
   }
 
   /**
@@ -142,71 +149,117 @@ export class PoseDecoder {
 
   /**
    * Track body parts from the motion grid.
-   * The grid tells us WHERE motion is happening → we map that to joint positions.
+   * Finds the centroid of motion in each body zone and positions joints there.
    */
   _trackFromMotionGrid(region, embedding, elapsed) {
     const grid = region.motionGrid;
     const cols = region.gridCols || 10;
     const rows = region.gridRows || 8;
 
-    // Body bounding box
-    const cx = region.x + region.w / 2;
-    const cy = region.y + region.h / 2;
-    const bodyH = Math.max(region.h, 0.3);
-    const bodyW = Math.max(region.w, 0.15);
+    // Body bounding box (in normalized 0-1 coords)
+    const bx = region.x, by = region.y, bw = region.w, bh = region.h;
+    const cx = bx + bw / 2;
+    const cy = by + bh / 2;
+    const bodyH = Math.max(bh, 0.3);
+    const bodyW = Math.max(bw, 0.15);
 
-    // Analyze the motion grid to find arm positions
-    // Divide body into zones: head (top 20%), arms (top 60% sides), torso (center), legs (bottom 40%)
+    // Find motion centroids per body zone from the grid
     if (grid) {
-      const armAnalysis = this._analyzeArmMotion(grid, cols, rows, region);
-      // Smooth arm tracking
-      this._leftArmY = 0.6 * this._leftArmY + 0.4 * armAnalysis.leftArmHeight;
-      this._rightArmY = 0.6 * this._rightArmY + 0.4 * armAnalysis.rightArmHeight;
-      this._leftArmX = 0.6 * this._leftArmX + 0.4 * armAnalysis.leftArmSpread;
-      this._rightArmX = 0.6 * this._rightArmX + 0.4 * armAnalysis.rightArmSpread;
-      this._headOffsetX = 0.7 * this._headOffsetX + 0.3 * armAnalysis.headOffsetX;
+      const zones = this._findZoneCentroids(grid, cols, rows, bx, by, bw, bh);
+      // Smooth with low alpha for responsiveness
+      const a = 0.3; // 30% old, 70% new → responsive
+      this._headCx    = a * this._headCx    + (1 - a) * zones.head.x;
+      this._headCy    = a * this._headCy    + (1 - a) * zones.head.y;
+      this._leftArmCx = a * this._leftArmCx + (1 - a) * zones.leftArm.x;
+      this._leftArmCy = a * this._leftArmCy + (1 - a) * zones.leftArm.y;
+      this._rightArmCx= a * this._rightArmCx+ (1 - a) * zones.rightArm.x;
+      this._rightArmCy= a * this._rightArmCy+ (1 - a) * zones.rightArm.y;
+      this._leftLegCx = a * this._leftLegCx + (1 - a) * zones.leftLeg.x;
+      this._leftLegCy = a * this._leftLegCy + (1 - a) * zones.leftLeg.y;
+      this._rightLegCx= a * this._rightLegCx+ (1 - a) * zones.rightLeg.x;
+      this._rightLegCy= a * this._rightLegCy+ (1 - a) * zones.rightLeg.y;
+      this._torsoCx   = a * this._torsoCx   + (1 - a) * zones.torso.x;
+      this._torsoCy   = a * this._torsoCy   + (1 - a) * zones.torso.y;
     }
 
     const P = PROPORTIONS;
-    const halfW = P.shoulderWidth * bodyH / 2;
-    const hipHalfW = P.hipWidth * bodyH / 2;
 
     // Breathing (subtle)
     const breathe = Math.sin(elapsed * 1.5) * 0.002;
 
-    // Core body positions from detection center
-    const hipY = cy + bodyH * 0.15;
-    const shoulderY = hipY - P.shoulderToHip * bodyH + breathe;
-    const headY = shoulderY - P.headToShoulder * bodyH;
-    const kneeY = hipY + P.hipToKnee * bodyH;
-    const ankleY = kneeY + P.kneeToAnkle * bodyH;
+    // === Position joints using tracked centroids ===
 
-    // HEAD follows motion centroid
-    const headX = cx + this._headOffsetX * bodyW * 0.3;
+    // HEAD: tracked centroid (top zone)
+    const headX = this._headCx;
+    const headY = this._headCy;
 
-    // ARM POSITIONS driven by motion grid analysis
-    // leftArmY: 0 = arm down at side, 1 = arm fully raised
-    // leftArmSpread: how far out the arm extends
-    const leftArmRaise = this._leftArmY;  // 0-1
-    const rightArmRaise = this._rightArmY;
-    const leftSpread = 0.02 + this._leftArmX * 0.12;
-    const rightSpread = 0.02 + this._rightArmX * 0.12;
+    // TORSO center drives shoulder/hip
+    const torsoX = this._torsoCx;
+    const shoulderY = this._torsoCy - bodyH * 0.08 + breathe;
+    const halfW = P.shoulderWidth * bodyH / 2;
+    const hipHalfW = P.hipWidth * bodyH / 2;
+    const hipY = shoulderY + P.shoulderToHip * bodyH;
 
-    // Elbow: interpolate between "at side" and "raised"
-    const lElbowY = shoulderY + P.shoulderToElbow * bodyH * (1 - leftArmRaise * 0.9);
-    const rElbowY = shoulderY + P.shoulderToElbow * bodyH * (1 - rightArmRaise * 0.9);
-    const lElbowX = cx - halfW - leftSpread;
-    const rElbowX = cx + halfW + rightSpread;
+    // ARMS: elbow + wrist driven toward arm zone centroids
+    // Left arm: shoulder is fixed, elbow/wrist pulled toward left arm centroid
+    const lShX = torsoX - halfW;
+    const lShY = shoulderY;
+    // Vector from shoulder toward arm centroid
+    const lArmDx = this._leftArmCx - lShX;
+    const lArmDy = this._leftArmCy - lShY;
+    const lArmDist = Math.sqrt(lArmDx * lArmDx + lArmDy * lArmDy) || 0.01;
+    const lArmNx = lArmDx / lArmDist;
+    const lArmNy = lArmDy / lArmDist;
+    // Elbow at shoulderToElbow distance along that direction
+    const elbowLen = P.shoulderToElbow * bodyH;
+    const lElbowX = lShX + lArmNx * elbowLen;
+    const lElbowY = lShY + lArmNy * elbowLen;
+    // Wrist continues further
+    const wristLen = P.elbowToWrist * bodyH;
+    const lWristX = lElbowX + lArmNx * wristLen;
+    const lWristY = lElbowY + lArmNy * wristLen;
 
-    // Wrist: extends further when raised
-    const lWristY = lElbowY + P.elbowToWrist * bodyH * (1 - leftArmRaise * 1.1);
-    const rWristY = rElbowY + P.elbowToWrist * bodyH * (1 - rightArmRaise * 1.1);
-    const lWristX = lElbowX - leftSpread * 0.6;
-    const rWristX = rElbowX + rightSpread * 0.6;
+    // Right arm: same approach
+    const rShX = torsoX + halfW;
+    const rShY = shoulderY;
+    const rArmDx = this._rightArmCx - rShX;
+    const rArmDy = this._rightArmCy - rShY;
+    const rArmDist = Math.sqrt(rArmDx * rArmDx + rArmDy * rArmDy) || 0.01;
+    const rArmNx = rArmDx / rArmDist;
+    const rArmNy = rArmDy / rArmDist;
+    const rElbowX = rShX + rArmNx * elbowLen;
+    const rElbowY = rShY + rArmNy * elbowLen;
+    const rWristX = rElbowX + rArmNx * wristLen;
+    const rWristY = rElbowY + rArmNy * wristLen;
 
-    // Leg motion from lower grid cells
-    const legMotion = grid ? this._analyzeLegMotion(grid, cols, rows) : { left: 0, right: 0 };
-    const legSwing = 0.015;
+    // LEGS: knees/ankles pulled toward leg zone centroids
+    const lHipX = torsoX - hipHalfW;
+    const rHipX = torsoX + hipHalfW;
+    const lLegDx = this._leftLegCx - lHipX;
+    const lLegDy = Math.max(0.05, this._leftLegCy - hipY); // always downward
+    const lLegDist = Math.sqrt(lLegDx * lLegDx + lLegDy * lLegDy) || 0.01;
+    const lLegNx = lLegDx / lLegDist;
+    const lLegNy = lLegDy / lLegDist;
+    const kneeLen = P.hipToKnee * bodyH;
+    const ankleLen = P.kneeToAnkle * bodyH;
+    const lKneeX = lHipX + lLegNx * kneeLen;
+    const lKneeY = hipY + lLegNy * kneeLen;
+    const lAnkleX = lKneeX + lLegNx * ankleLen;
+    const lAnkleY = lKneeY + lLegNy * ankleLen;
+
+    const rLegDx = this._rightLegCx - rHipX;
+    const rLegDy = Math.max(0.05, this._rightLegCy - hipY);
+    const rLegDist = Math.sqrt(rLegDx * rLegDx + rLegDy * rLegDy) || 0.01;
+    const rLegNx = rLegDx / rLegDist;
+    const rLegNy = rLegDy / rLegDist;
+    const rKneeX = rHipX + rLegNx * kneeLen;
+    const rKneeY = hipY + rLegNy * kneeLen;
+    const rAnkleX = rKneeX + rLegNx * ankleLen;
+    const rAnkleY = rKneeY + rLegNy * ankleLen;
+
+    // Arm raise amount (for hand openness)
+    const leftArmRaise = Math.max(0, Math.min(1, (shoulderY - this._leftArmCy) / (bodyH * 0.3)));
+    const rightArmRaise = Math.max(0, Math.min(1, (shoulderY - this._rightArmCy) / (bodyH * 0.3)));
 
     // Compute hand finger positions from wrist-elbow axis
     const lHandAngle = Math.atan2(lWristY - lElbowY, lWristX - lElbowX);
@@ -214,9 +267,11 @@ export class PoseDecoder {
     const fingerLen = P.wristToFinger * bodyH;
     const fingerSpr = P.fingerSpread * bodyH;
 
-    // Hand openness driven by motion intensity (more motion = more spread)
-    const lHandOpen = Math.min(1, leftArmRaise * 0.5 + (this._leftArmX || 0) * 0.5);
-    const rHandOpen = Math.min(1, rightArmRaise * 0.5 + (this._rightArmX || 0) * 0.5);
+    // Hand openness driven by arm raise + arm lateral spread
+    const lArmSpread = Math.abs(this._leftArmCx - (bx + bw * 0.3)) / (bw * 0.3);
+    const rArmSpread = Math.abs(this._rightArmCx - (bx + bw * 0.7)) / (bw * 0.3);
+    const lHandOpen = Math.min(1, leftArmRaise * 0.5 + lArmSpread * 0.5);
+    const rHandOpen = Math.min(1, rightArmRaise * 0.5 + rArmSpread * 0.5);
 
     // Left ankle/knee positions
     const lAnkleX = cx - hipHalfW + legMotion.left * legSwing * 1.3;
@@ -240,9 +295,9 @@ export class PoseDecoder {
       // 4: right_ear
       { x: headX + P.earSpacing * bodyH, y: headY + 0.005, confidence: 0.72 },
       // 5: left_shoulder
-      { x: cx - halfW, y: shoulderY, confidence: 0.94 },
+      { x: lShX, y: lShY, confidence: 0.94 },
       // 6: right_shoulder
-      { x: cx + halfW, y: shoulderY, confidence: 0.94 },
+      { x: rShX, y: rShY, confidence: 0.94 },
       // 7: left_elbow
       { x: lElbowX, y: lElbowY, confidence: 0.87 },
       // 8: right_elbow
@@ -252,17 +307,17 @@ export class PoseDecoder {
       // 10: right_wrist
       { x: rWristX, y: rWristY, confidence: 0.82 },
       // 11: left_hip
-      { x: cx - hipHalfW, y: hipY, confidence: 0.91 },
+      { x: lHipX, y: hipY, confidence: 0.91 },
       // 12: right_hip
-      { x: cx + hipHalfW, y: hipY, confidence: 0.91 },
+      { x: rHipX, y: hipY, confidence: 0.91 },
       // 13: left_knee
-      { x: lKneeX, y: kneeY, confidence: 0.88 },
+      { x: lKneeX, y: lKneeY, confidence: 0.88 },
       // 14: right_knee
-      { x: rKneeX, y: kneeY, confidence: 0.88 },
+      { x: rKneeX, y: rKneeY, confidence: 0.88 },
       // 15: left_ankle
-      { x: lAnkleX, y: ankleY, confidence: 0.83 },
+      { x: lAnkleX, y: lAnkleY, confidence: 0.83 },
       // 16: right_ankle
-      { x: rAnkleX, y: ankleY, confidence: 0.83 },
+      { x: rAnkleX, y: rAnkleY, confidence: 0.83 },
 
       // === Extended keypoints (17-25) ===
 
@@ -294,15 +349,15 @@ export class PoseDecoder {
 
       // 23: left_foot_index (toe tip) — extends forward from ankle
       { x: lAnkleX + P.ankleToToe * bodyH * 0.5,
-        y: ankleY + P.ankleToToe * bodyH * 0.3,
+        y: lAnkleY + P.ankleToToe * bodyH * 0.3,
         confidence: 0.65 },
       // 24: right_foot_index
       { x: rAnkleX + P.ankleToToe * bodyH * 0.5,
-        y: ankleY + P.ankleToToe * bodyH * 0.3,
+        y: rAnkleY + P.ankleToToe * bodyH * 0.3,
         confidence: 0.65 },
 
       // 25: neck (midpoint between shoulders, slightly above)
-      { x: neckX, y: neckY, confidence: 0.93 },
+      { x: (lShX + rShX) / 2, y: shoulderY - P.headToShoulder * bodyH * 0.35, confidence: 0.93 },
     ];
 
     for (let i = 0; i < keypoints.length; i++) {
@@ -313,94 +368,61 @@ export class PoseDecoder {
   }
 
   /**
-   * Analyze the motion grid to determine arm positions.
-   * Left side of grid = left side of body, etc.
+   * Find weighted motion centroids for each body zone.
+   * Divides the bounding box into 6 zones: head, left arm, right arm, torso, left leg, right leg.
+   * Returns the (x,y) centroid of motion intensity for each zone.
    */
-  _analyzeArmMotion(grid, cols, rows, region) {
-    // Body center column
-    const centerCol = Math.floor(cols / 2);
+  _findZoneCentroids(grid, cols, rows, bx, by, bw, bh) {
+    // Zone definitions (in grid-relative fractions)
+    const zones = {
+      head:     { rMin: 0,    rMax: 0.2,  cMin: 0.25, cMax: 0.75, wx: 0, wy: 0, wt: 0 },
+      leftArm:  { rMin: 0.1,  rMax: 0.6,  cMin: 0,    cMax: 0.35, wx: 0, wy: 0, wt: 0 },
+      rightArm: { rMin: 0.1,  rMax: 0.6,  cMin: 0.65, cMax: 1.0,  wx: 0, wy: 0, wt: 0 },
+      torso:    { rMin: 0.15, rMax: 0.55, cMin: 0.3,  cMax: 0.7,  wx: 0, wy: 0, wt: 0 },
+      leftLeg:  { rMin: 0.5,  rMax: 1.0,  cMin: 0.1,  cMax: 0.5,  wx: 0, wy: 0, wt: 0 },
+      rightLeg: { rMin: 0.5,  rMax: 1.0,  cMin: 0.5,  cMax: 0.9,  wx: 0, wy: 0, wt: 0 },
+    };
 
-    // Upper body rows (top 60% of detected region)
-    const upperEnd = Math.floor(rows * 0.6);
+    // Accumulate weighted centroids per zone
+    for (let r = 0; r < rows; r++) {
+      const ry = r / rows; // 0-1 within grid
+      for (let c = 0; c < cols; c++) {
+        const cx_g = c / cols; // 0-1 within grid
+        const val = grid[r][c];
+        if (val < 0.005) continue; // skip near-zero motion
 
-    // Compute motion intensity for left vs right, at different heights
-    let leftUpperMotion = 0, leftMidMotion = 0;
-    let rightUpperMotion = 0, rightMidMotion = 0;
-    let leftCount = 0, rightCount = 0;
-    let headMotionX = 0, headMotionWeight = 0;
+        // Map grid position to body-space coordinates (0-1)
+        const worldX = bx + cx_g * bw;
+        const worldY = by + ry * bh;
 
-    for (let r = 0; r < upperEnd; r++) {
-      const heightWeight = 1.0 - (r / upperEnd) * 0.3; // Upper rows weighted more
-
-      // Head zone: top 25%, center 40% of width
-      if (r < Math.floor(rows * 0.25)) {
-        const headLeft = Math.floor(cols * 0.3);
-        const headRight = Math.floor(cols * 0.7);
-        for (let c = headLeft; c <= headRight; c++) {
-          const val = grid[r][c];
-          headMotionX += (c / cols - 0.5) * val;
-          headMotionWeight += val;
+        // Assign to matching zones (a cell can contribute to multiple overlapping zones)
+        for (const z of Object.values(zones)) {
+          if (ry >= z.rMin && ry < z.rMax && cx_g >= z.cMin && cx_g < z.cMax) {
+            z.wx += worldX * val;
+            z.wy += worldY * val;
+            z.wt += val;
+          }
         }
       }
-
-      // Left arm zone: left 40% of grid
-      for (let c = 0; c < Math.floor(cols * 0.4); c++) {
-        const val = grid[r][c];
-        if (r < rows * 0.3) leftUpperMotion += val * heightWeight;
-        else leftMidMotion += val * heightWeight;
-        leftCount++;
-      }
-
-      // Right arm zone: right 40% of grid
-      for (let c = Math.floor(cols * 0.6); c < cols; c++) {
-        const val = grid[r][c];
-        if (r < rows * 0.3) rightUpperMotion += val * heightWeight;
-        else rightMidMotion += val * heightWeight;
-        rightCount++;
-      }
     }
 
-    // Normalize
-    const leftTotal = leftUpperMotion + leftMidMotion;
-    const rightTotal = rightUpperMotion + rightMidMotion;
-    const maxMotion = 0.15; // Calibration threshold
+    // Compute centroids with fallback defaults
+    const centroid = (z, defX, defY) => ({
+      x: z.wt > 0.01 ? z.wx / z.wt : defX,
+      y: z.wt > 0.01 ? z.wy / z.wt : defY,
+      weight: z.wt
+    });
 
-    // Arm height: 0 = at side, 1 = raised
-    // High motion in upper-left → left arm is raised
-    const leftArmHeight = Math.min(1, (leftUpperMotion / maxMotion) * 2);
-    const rightArmHeight = Math.min(1, (rightUpperMotion / maxMotion) * 2);
+    const midX = bx + bw / 2;
+    const midY = by + bh / 2;
 
-    // Arm spread: how far out from body
-    const leftArmSpread = Math.min(1, leftTotal / maxMotion);
-    const rightArmSpread = Math.min(1, rightTotal / maxMotion);
-
-    // Head offset
-    const headOffsetX = headMotionWeight > 0.01 ? headMotionX / headMotionWeight : 0;
-
-    return { leftArmHeight, rightArmHeight, leftArmSpread, rightArmSpread, headOffsetX };
-  }
-
-  /**
-   * Analyze lower grid for leg motion.
-   */
-  _analyzeLegMotion(grid, cols, rows) {
-    const lowerStart = Math.floor(rows * 0.6);
-    let leftMotion = 0, rightMotion = 0;
-
-    for (let r = lowerStart; r < rows; r++) {
-      for (let c = 0; c < Math.floor(cols / 2); c++) {
-        leftMotion += grid[r][c];
-      }
-      for (let c = Math.floor(cols / 2); c < cols; c++) {
-        rightMotion += grid[r][c];
-      }
-    }
-
-    // Return as -1 to 1 range (asymmetry indicates which leg is moving)
-    const total = leftMotion + rightMotion + 0.001;
     return {
-      left: (leftMotion - rightMotion) / total,
-      right: (rightMotion - leftMotion) / total
+      head:     centroid(zones.head,     midX,           by + bh * 0.1),
+      leftArm:  centroid(zones.leftArm,  bx + bw * 0.2, midY - bh * 0.05),
+      rightArm: centroid(zones.rightArm, bx + bw * 0.8, midY - bh * 0.05),
+      torso:    centroid(zones.torso,    midX,           midY),
+      leftLeg:  centroid(zones.leftLeg,  bx + bw * 0.35,by + bh * 0.75),
+      rightLeg: centroid(zones.rightLeg, bx + bw * 0.65,by + bh * 0.75),
     };
   }
 
