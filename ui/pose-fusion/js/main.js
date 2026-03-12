@@ -111,8 +111,10 @@ function init() {
   });
 
   // Try to load WASM embedders (non-blocking)
-  visualCnn.tryLoadWasm('./pkg/ruvector_cnn_wasm');
-  csiCnn.tryLoadWasm('./pkg/ruvector_cnn_wasm');
+  // Resolve relative to this JS module file (in pose-fusion/js/) → ../pkg/
+  const wasmBase = new URL('../pkg/ruvector_cnn_wasm', import.meta.url).href;
+  visualCnn.tryLoadWasm(wasmBase);
+  csiCnn.tryLoadWasm(wasmBase);
 
   // Auto-start camera for video/dual modes
   updateModeUI();

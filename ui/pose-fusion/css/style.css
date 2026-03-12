@@ -129,10 +129,11 @@ body {
 .main-grid {
   display: grid;
   grid-template-columns: 1fr 360px;
-  grid-template-rows: auto auto;
+  grid-template-rows: 1fr auto;
   gap: 16px;
   padding: 16px 24px;
-  max-height: calc(100vh - 72px);
+  height: calc(100vh - 72px);
+  overflow: hidden;
 }
 
 /* === Video Panel === */
@@ -142,8 +143,7 @@ body {
   border-radius: var(--radius);
   border: 1px solid var(--bg-panel-border);
   overflow: hidden;
-  aspect-ratio: 4/3;
-  max-height: 60vh;
+  min-height: 0;
 }
 
 .video-panel video {
@@ -204,7 +204,7 @@ body {
   flex-direction: column;
   gap: 12px;
   overflow-y: auto;
-  max-height: calc(100vh - 88px);
+  min-height: 0;
 }
 
 .panel {
@@ -397,7 +397,9 @@ body {
 @media (max-width: 900px) {
   .main-grid {
     grid-template-columns: 1fr;
+    height: auto;
+    overflow: auto;
   }
-  .video-panel { aspect-ratio: 16/9; max-height: 40vh; }
-  .side-panels { max-height: none; }
+  .video-panel { aspect-ratio: 16/9; max-height: 50vh; }
+  .side-panels { max-height: none; overflow: visible; }
 }
