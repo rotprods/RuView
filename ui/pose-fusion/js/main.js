@@ -4,12 +4,12 @@
  * Main orchestration: video capture → CNN embedding → CSI processing → fusion → rendering
  */
 
-import { VideoCapture } from './video-capture.js';
-import { CsiSimulator } from './csi-simulator.js';
-import { CnnEmbedder } from './cnn-embedder.js';
-import { FusionEngine } from './fusion-engine.js';
-import { PoseDecoder } from './pose-decoder.js';
-import { CanvasRenderer } from './canvas-renderer.js';
+import { VideoCapture } from './video-capture.js?v=4';
+import { CsiSimulator } from './csi-simulator.js?v=4';
+import { CnnEmbedder } from './cnn-embedder.js?v=4';
+import { FusionEngine } from './fusion-engine.js?v=4';
+import { PoseDecoder } from './pose-decoder.js?v=4';
+import { CanvasRenderer } from './canvas-renderer.js?v=4';
 
 // === State ===
 let mode = 'dual';  // 'dual' | 'video' | 'csi'
@@ -71,9 +71,20 @@ const latTotalEl = document.getElementById('lat-total');
 // Cross-modal similarity
 const crossModalEl = document.getElementById('cross-modal-sim');
 
+// RSSI elements
+const rssiBarEl = document.getElementById('rssi-bar');
+const rssiValueEl = document.getElementById('rssi-value');
+const rssiQualityEl = document.getElementById('rssi-quality');
+const rssiSparkCanvas = document.getElementById('rssi-sparkline');
+const rssiSparkCtx = rssiSparkCanvas ? rssiSparkCanvas.getContext('2d') : null;
+const rssiHistory = [];
+const RSSI_HISTORY_MAX = 80;
+
 // === Initialize ===
 function init() {
+  console.log(`[PoseFusion] init() v4 — CsiSimulator=${CsiSimulator.VERSION || 'OLD'}, starting...`);
   resizeCanvases();
+  console.log(`[PoseFusion] canvases: skeleton=${skeletonCanvas.width}x${skeletonCanvas.height}, csi=${csiCanvas.width}x${csiCanvas.height}, emb=${embeddingCanvas.width}x${embeddingCanvas.height}`);
   window.addEventListener('resize', resizeCanvases);
 
   // Mode change
@@ -110,9 +121,9 @@ function init() {
     }
   });
 
-  // Try to load WASM embedders (non-blocking)
-  // Resolve relative to this JS module file (in pose-fusion/js/) → ../pkg/
-  const wasmBase = new URL('../pkg/ruvector_cnn_wasm', import.meta.url).href;
+  // Try to load RuVector Attention WASM embedders (non-blocking)
+  // Loads from ../pkg/ruvector-attention/ (real RuVector Multi-Head + Flash Attention)
+  const wasmBase = new URL('../pkg/ruvector-attention', import.meta.url).href;
   visualCnn.tryLoadWasm(wasmBase);
   csiCnn.tryLoadWasm(wasmBase);
 
@@ -168,22 +179,24 @@ function resizeCanvases() {
     skeletonCanvas.height = rect.height;
   }
 
-  // CSI canvas
-  csiCanvas.width = csiCanvas.parentElement.clientWidth;
+  // CSI canvas (min 200px width)
+  csiCanvas.width = Math.max(200, csiCanvas.parentElement.clientWidth);
   csiCanvas.height = 120;
 
-  // Embedding canvas
-  embeddingCanvas.width = embeddingCanvas.parentElement.clientWidth;
+  // Embedding canvas (min 200px width)
+  embeddingCanvas.width = Math.max(200, embeddingCanvas.parentElement.clientWidth);
   embeddingCanvas.height = 140;
 }
 
 // === Main Loop ===
+let _loopErrorShown = false;
 function mainLoop(timestamp) {
   if (!isRunning) return;
   requestAnimationFrame(mainLoop);
 
   if (isPaused) return;
 
+  try {
   const elapsed = performance.now() / 1000 - startTime;
   const totalStart = performance.now();
 
@@ -309,6 +322,117 @@ function mainLoop(timestamp) {
   // Cross-modal similarity
   const sim = fusionEngine.getCrossModalSimilarity();
   crossModalEl.textContent = sim.toFixed(3);
+
+  // RSSI update
+  updateRssi(csiSimulator.rssiDbm);
+
+  // One-time diagnostic
+  if (frameCount === 1) {
+    console.log(`[PoseFusion] frame 1 OK — mode=${mode}, csi.bufLen=${csiSimulator.amplitudeBuffer.length}, embPts=${embPoints.fused.length}, rssi=${csiSimulator.rssiDbm.toFixed(1)}`);
+  }
+
+  } catch (err) {
+    if (!_loopErrorShown) {
+      _loopErrorShown = true;
+      console.error('[MainLoop]', err);
+      // Show error visually on page
+      const errDiv = document.createElement('div');
+      errDiv.style.cssText = 'position:fixed;bottom:60px;left:24px;right:24px;background:rgba(255,48,64,0.95);color:#fff;padding:12px 16px;border-radius:8px;font:12px/1.4 "JetBrains Mono",monospace;z-index:9999;max-height:120px;overflow:auto';
+      errDiv.textContent = `[MainLoop Error] ${err.message}\n${err.stack?.split('\n').slice(0,3).join('\n')}`;
+      document.body.appendChild(errDiv);
+    }
+  }
+}
+
+// === RSSI Visualization ===
+function updateRssi(dbm) {
+  if (!rssiBarEl) return;
+
+  // Clamp to typical WiFi range: -100 (worst) to -30 (best)
+  const clamped = Math.max(-100, Math.min(-30, dbm));
+  const pct = ((clamped + 100) / 70) * 100; // 0-100%
+
+  rssiBarEl.style.width = `${pct}%`;
+  rssiValueEl.textContent = `${Math.round(clamped)} dBm`;
+
+  // Quality label
+  let quality;
+  if (clamped > -50) quality = 'Excellent';
+  else if (clamped > -60) quality = 'Good';
+  else if (clamped > -70) quality = 'Fair';
+  else if (clamped > -80) quality = 'Weak';
+  else quality = 'Poor';
+  rssiQualityEl.textContent = quality;
+
+  // Color the dBm value based on quality
+  if (clamped > -60) rssiValueEl.style.color = 'var(--green-glow)';
+  else if (clamped > -75) rssiValueEl.style.color = 'var(--amber)';
+  else rssiValueEl.style.color = 'var(--red-alert)';
+
+  // Sparkline history
+  rssiHistory.push(clamped);
+  if (rssiHistory.length > RSSI_HISTORY_MAX) rssiHistory.shift();
+  drawRssiSparkline();
+}
+
+function drawRssiSparkline() {
+  if (!rssiSparkCtx || rssiHistory.length < 2) return;
+  const w = rssiSparkCanvas.width;
+  const h = rssiSparkCanvas.height;
+  const ctx = rssiSparkCtx;
+
+  ctx.clearRect(0, 0, w, h);
+
+  // Draw signal strength line
+  const len = rssiHistory.length;
+  const step = w / (RSSI_HISTORY_MAX - 1);
+
+  // Gradient fill under line
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, 'rgba(0,210,120,0.3)');
+  grad.addColorStop(1, 'rgba(0,210,120,0)');
+
+  ctx.beginPath();
+  for (let i = 0; i < len; i++) {
+    const x = (RSSI_HISTORY_MAX - len + i) * step;
+    const y = h - ((rssiHistory[i] + 100) / 70) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  // Fill area
+  const lastX = (RSSI_HISTORY_MAX - 1) * step;
+  const firstX = (RSSI_HISTORY_MAX - len) * step;
+  ctx.lineTo(lastX, h);
+  ctx.lineTo(firstX, h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Draw line on top
+  ctx.beginPath();
+  for (let i = 0; i < len; i++) {
+    const x = (RSSI_HISTORY_MAX - len + i) * step;
+    const y = h - ((rssiHistory[i] + 100) / 70) * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = '#00d878';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Pulsing dot at latest value
+  const latestX = lastX;
+  const latestY = h - ((rssiHistory[len - 1] + 100) / 70) * h;
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 300);
+  ctx.beginPath();
+  ctx.arc(latestX, latestY, 2 + pulse, 0, Math.PI * 2);
+  ctx.fillStyle = '#00d878';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(latestX, latestY, 4 + pulse * 2, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(0,216,120,${0.3 + pulse * 0.3})`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
 }
 
 // Boot

@@ -111,18 +111,19 @@ export class FusionEngine {
    * @returns {{ video: Array, csi: Array, fused: Array }}
    */
   getEmbeddingPoints() {
-    // Simple 2D projection using first two principal components (approximated)
+    // Sparse random projection: pick a few dimensions with fixed coefficients
+    // to get visible 2D spread (avoids cancellation from summing all 128 dims)
     const project = (emb) => {
       if (!emb || emb.length < 4) return null;
-      // Use pairs of dimensions as crude 2D projection
-      let x = 0, y = 0;
-      for (let i = 0; i < emb.length; i += 2) {
-        x += emb[i] * (i % 4 < 2 ? 1 : -1);
-        if (i + 1 < emb.length) {
-          y += emb[i + 1] * (i % 4 < 2 ? 1 : -1);
-        }
-      }
-      return [x * 2, y * 2]; // Scale for visibility
+      // Use 8 sparse dimensions with predetermined signs (seeded, not random)
+      const dim = emb.length;
+      const x = emb[0] * 3.2 - emb[3] * 2.8 + emb[7] * 2.1 - emb[12] * 1.9
+              + (dim > 30 ? emb[29] * 1.5 - emb[31] * 1.3 : 0)
+              + (dim > 60 ? emb[55] * 1.1 - emb[60] * 0.9 : 0);
+      const y = emb[1] * 3.0 - emb[5] * 2.5 + emb[9] * 2.3 - emb[15] * 1.7
+              + (dim > 40 ? emb[37] * 1.4 - emb[42] * 1.2 : 0)
+              + (dim > 80 ? emb[73] * 1.0 - emb[80] * 0.8 : 0);
+      return [x, y];
     };
 
     return {

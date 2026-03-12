@@ -185,22 +185,63 @@ export class CanvasRenderer {
     ctx.beginPath(); ctx.moveTo(w / 2, 0); ctx.lineTo(w / 2, h); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
 
+    // Auto-scale: find max extent across all point sets
+    let maxExtent = 0.01;
+    for (const pts of [points.video, points.csi, points.fused]) {
+      if (!pts) continue;
+      for (const p of pts) {
+        if (!p) continue;
+        maxExtent = Math.max(maxExtent, Math.abs(p[0]), Math.abs(p[1]));
+      }
+    }
+    const scale = 0.42 / maxExtent; // Fill ~84% of half-width
+
     const drawPoints = (pts, color, size) => {
       if (!pts || pts.length === 0) return;
       const len = pts.length;
+
+      // Draw trail line connecting recent points
+      if (len >= 2) {
+        ctx.beginPath();
+        let started = false;
+        for (let i = 0; i < len; i++) {
+          const p = pts[i];
+          if (!p) continue;
+          const px = w / 2 + p[0] * scale * w;
+          const py = h / 2 + p[1] * scale * h;
+          if (px < -10 || px > w + 10 || py < -10 || py > h + 10) continue;
+          if (!started) { ctx.moveTo(px, py); started = true; }
+          else ctx.lineTo(px, py);
+        }
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 0.2;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
+      // Draw dots with glow on newest
       for (let i = 0; i < len; i++) {
         const p = pts[i];
         if (!p) continue;
-        const age = 1 - (i / len) * 0.7; // Fade older points
-        const px = w / 2 + p[0] * w * 0.35;
-        const py = h / 2 + p[1] * h * 0.35;
+        const age = 1 - (i / len) * 0.7;
+        const px = w / 2 + p[0] * scale * w;
+        const py = h / 2 + p[1] * scale * h;
 
-        if (px < 0 || px > w || py < 0 || py > h) continue;
+        if (px < -10 || px > w + 10 || py < -10 || py > h + 10) continue;
+
+        // Glow on newest point
+        if (i === len - 1) {
+          ctx.beginPath();
+          ctx.arc(px, py, size + 4, 0, Math.PI * 2);
+          ctx.fillStyle = color;
+          ctx.globalAlpha = 0.3;
+          ctx.fill();
+        }
 
         ctx.beginPath();
-        ctx.arc(px, py, size, 0, Math.PI * 2);
+        ctx.arc(px, py, i === len - 1 ? size + 1 : size, 0, Math.PI * 2);
         ctx.fillStyle = color;
-        ctx.globalAlpha = age * 0.7;
+        ctx.globalAlpha = age * 0.8;
         ctx.fill();
       }
     };

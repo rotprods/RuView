@@ -9,6 +9,8 @@
  */
 
 export class CsiSimulator {
+  static VERSION = 'v4-drift';  // Cache-bust verification
+
   constructor(opts = {}) {
     this.subcarriers = opts.subcarriers || 52; // 802.11n HT20
     this.timeWindow = opts.timeWindow || 56;   // frames in sliding window
@@ -31,6 +33,10 @@ export class CsiSimulator {
       this._baseAmplitude[i] = 0.5 + 0.3 * Math.sin(i * 0.12);
       this._basePhase[i] = (i / this.subcarriers) * Math.PI * 2;
     }
+
+    // RSSI tracking
+    this.rssiDbm = -70; // default mid-range
+    this._rssiTarget = -70;
 
     // Person influence (updated from video motion)
     this.personPresence = 0;
@@ -126,6 +132,13 @@ export class CsiSimulator {
       this.phaseBuffer.shift();
     }
 
+    // RSSI: smooth toward target (demo mode generates synthetic RSSI)
+    if (this.mode === 'demo') {
+      // Simulate RSSI based on person presence and slow drift
+      this._rssiTarget = -55 - 25 * (1 - this.personPresence) + Math.sin(elapsed * 0.3) * 3;
+    }
+    this.rssiDbm += (this._rssiTarget - this.rssiDbm) * 0.1;
+
     // SNR estimate
     let signalPower = 0, noisePower = 0;
     for (let i = 0; i < this.subcarriers; i++) {
@@ -215,6 +228,11 @@ export class CsiSimulator {
       this._noiseState[i] = 0.95 * this._noiseState[i] + 0.05 * (rng() * 2 - 1) * 0.03;
       a += this._noiseState[i];
 
+      // Ambient temporal drift (multipath fading even in empty room)
+      a += 0.06 * Math.sin(elapsed * 0.7 + i * 0.25)
+         + 0.04 * Math.sin(elapsed * 1.3 - i * 0.18)
+         + 0.03 * Math.cos(elapsed * 2.1 + i * 0.4);
+
       // Person-induced CSI perturbation
       if (presence > 0.1) {
         // Subcarrier-dependent body reflection (Fresnel zone model)
@@ -237,6 +255,17 @@ export class CsiSimulator {
   }
 
   _handleLiveFrame(data) {
+    // Handle JSON text frames from the sensing server
+    if (typeof data === 'string') {
+      try {
+        const msg = JSON.parse(data);
+        this._handleJsonFrame(msg);
+      } catch (_) { /* ignore malformed JSON */ }
+      return;
+    }
+
+    // Handle binary ArrayBuffer frames (ADR-018 format)
+    if (!(data instanceof ArrayBuffer)) return;
     const view = new DataView(data);
     // Check ADR-018 magic: 0xC5110001
     if (data.byteLength < 20) return;
@@ -253,6 +282,64 @@ export class CsiSimulator {
       const imag = view.getInt16(headerSize + i * 4 + 2, true);
       this._liveAmplitude[i] = Math.sqrt(real * real + imag * imag) / 2048;
       this._livePhase[i] = Math.atan2(imag, real);
+    }
+  }
+
+  _handleJsonFrame(msg) {
+    // Sensing server sends: { type: "sensing_update", nodes: [{ amplitude: [...], subcarrier_count }], classification, features }
+    this._liveAmplitude = new Float32Array(this.subcarriers);
+    this._livePhase = new Float32Array(this.subcarriers);
+
+    // Extract amplitude from sensing_update node data
+    const node = (msg.nodes && msg.nodes[0]) || msg;
+    const ampArr = node.amplitude || msg.amplitude;
+    if (ampArr && Array.isArray(ampArr)) {
+      const n = Math.min(ampArr.length, this.subcarriers);
+      // Server sends raw amplitude (already magnitude), normalize to 0-1
+      let maxAmp = 0;
+      for (let i = 0; i < n; i++) maxAmp = Math.max(maxAmp, Math.abs(ampArr[i]));
+      const scale = maxAmp > 0 ? 1.0 / maxAmp : 1.0;
+      for (let i = 0; i < n; i++) {
+        this._liveAmplitude[i] = Math.abs(ampArr[i]) * scale;
+      }
+    }
+
+    // Phase from node (if available)
+    const phaseArr = node.phase || msg.phase;
+    if (phaseArr && Array.isArray(phaseArr)) {
+      const n = Math.min(phaseArr.length, this.subcarriers);
+      for (let i = 0; i < n; i++) this._livePhase[i] = phaseArr[i];
+    } else if (ampArr) {
+      // Synthesize phase from amplitude variation (Hilbert-like estimate)
+      for (let i = 1; i < this.subcarriers; i++) {
+        this._livePhase[i] = this._livePhase[i - 1] + (this._liveAmplitude[i] - this._liveAmplitude[i - 1]) * Math.PI;
+      }
+    }
+
+    // Handle raw I/Q pairs
+    const iq = node.iq || msg.iq;
+    if (iq && Array.isArray(iq)) {
+      const n = Math.min(iq.length / 2, this.subcarriers);
+      for (let i = 0; i < n; i++) {
+        const real = iq[i * 2], imag = iq[i * 2 + 1];
+        this._liveAmplitude[i] = Math.sqrt(real * real + imag * imag) / 2048;
+        this._livePhase[i] = Math.atan2(imag, real);
+      }
+    }
+
+    // Extract RSSI from node data
+    if (typeof node.rssi_dbm === 'number') {
+      this._rssiTarget = node.rssi_dbm;
+    } else if (msg.features && typeof msg.features.mean_rssi === 'number') {
+      this._rssiTarget = msg.features.mean_rssi;
+    }
+
+    // Update presence from server classification
+    const cls = msg.classification;
+    if (cls) {
+      if (typeof cls.confidence === 'number') {
+        this.personPresence = cls.presence ? cls.confidence : 0;
+      }
     }
   }
 
