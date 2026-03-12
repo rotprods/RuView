@@ -9,24 +9,35 @@
  * When person exits frame, CSI data continues tracking (through-wall mode).
  */
 
-// COCO keypoint definitions
+// Extended keypoint definitions: 17 COCO + 9 hand/fingertip approximations = 26 total
 export const KEYPOINT_NAMES = [
   'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear',
   'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
   'left_wrist', 'right_wrist', 'left_hip', 'right_hip',
-  'left_knee', 'right_knee', 'left_ankle', 'right_ankle'
+  'left_knee', 'right_knee', 'left_ankle', 'right_ankle',
+  // Extended: hand keypoints (17-25)
+  'left_thumb', 'left_index', 'left_pinky',       // 17, 18, 19
+  'right_thumb', 'right_index', 'right_pinky',    // 20, 21, 22
+  'left_foot_index', 'right_foot_index',           // 23, 24 (toe tips)
+  'neck',                                          // 25 (mid-shoulder)
 ];
 
 // Skeleton connections (pairs of keypoint indices)
 export const SKELETON_CONNECTIONS = [
   [0, 1], [0, 2], [1, 3], [2, 4],           // Head
-  [5, 6],                                     // Shoulders
+  [0, 25],                                    // Nose → neck
+  [25, 5], [25, 6],                           // Neck → shoulders
   [5, 7], [7, 9],                             // Left arm
   [6, 8], [8, 10],                            // Right arm
   [5, 11], [6, 12],                           // Torso
   [11, 12],                                   // Hips
   [11, 13], [13, 15],                         // Left leg
   [12, 14], [14, 16],                         // Right leg
+  // Hand connections
+  [9, 17], [9, 18], [9, 19],                 // Left wrist → fingers
+  [10, 20], [10, 21], [10, 22],              // Right wrist → fingers
+  // Foot connections
+  [15, 23], [16, 24],                         // Ankles → toes
 ];
 
 // Standard body proportions (relative to body height)
@@ -41,6 +52,12 @@ const PROPORTIONS = {
   kneeToAnkle: 0.24,
   eyeSpacing: 0.04,
   earSpacing: 0.07,
+  // Hand proportions
+  wristToFinger: 0.09,
+  fingerSpread: 0.04,
+  thumbAngle: 0.6,    // radians from wrist-elbow axis
+  // Foot proportions
+  ankleToToe: 0.06,
 };
 
 export class PoseDecoder {
@@ -191,6 +208,26 @@ export class PoseDecoder {
     const legMotion = grid ? this._analyzeLegMotion(grid, cols, rows) : { left: 0, right: 0 };
     const legSwing = 0.015;
 
+    // Compute hand finger positions from wrist-elbow axis
+    const lHandAngle = Math.atan2(lWristY - lElbowY, lWristX - lElbowX);
+    const rHandAngle = Math.atan2(rWristY - rElbowY, rWristX - rElbowX);
+    const fingerLen = P.wristToFinger * bodyH;
+    const fingerSpr = P.fingerSpread * bodyH;
+
+    // Hand openness driven by motion intensity (more motion = more spread)
+    const lHandOpen = Math.min(1, leftArmRaise * 0.5 + (this._leftArmX || 0) * 0.5);
+    const rHandOpen = Math.min(1, rightArmRaise * 0.5 + (this._rightArmX || 0) * 0.5);
+
+    // Left ankle/knee positions
+    const lAnkleX = cx - hipHalfW + legMotion.left * legSwing * 1.3;
+    const rAnkleX = cx + hipHalfW + legMotion.right * legSwing * 1.3;
+    const lKneeX = cx - hipHalfW + legMotion.left * legSwing;
+    const rKneeX = cx + hipHalfW + legMotion.right * legSwing;
+
+    // Neck (midpoint between shoulders)
+    const neckX = cx;
+    const neckY = shoulderY - P.headToShoulder * bodyH * 0.35;
+
     const keypoints = [
       // 0: nose
       { x: headX, y: headY + 0.01, confidence: 0.92 },
@@ -219,13 +256,53 @@ export class PoseDecoder {
       // 12: right_hip
       { x: cx + hipHalfW, y: hipY, confidence: 0.91 },
       // 13: left_knee
-      { x: cx - hipHalfW + legMotion.left * legSwing, y: kneeY, confidence: 0.88 },
+      { x: lKneeX, y: kneeY, confidence: 0.88 },
       // 14: right_knee
-      { x: cx + hipHalfW + legMotion.right * legSwing, y: kneeY, confidence: 0.88 },
+      { x: rKneeX, y: kneeY, confidence: 0.88 },
       // 15: left_ankle
-      { x: cx - hipHalfW + legMotion.left * legSwing * 1.3, y: ankleY, confidence: 0.83 },
+      { x: lAnkleX, y: ankleY, confidence: 0.83 },
       // 16: right_ankle
-      { x: cx + hipHalfW + legMotion.right * legSwing * 1.3, y: ankleY, confidence: 0.83 },
+      { x: rAnkleX, y: ankleY, confidence: 0.83 },
+
+      // === Extended keypoints (17-25) ===
+
+      // 17: left_thumb — offset at thumb angle from wrist-elbow axis
+      { x: lWristX + fingerLen * Math.cos(lHandAngle + P.thumbAngle) * (0.6 + lHandOpen * 0.4),
+        y: lWristY + fingerLen * Math.sin(lHandAngle + P.thumbAngle) * (0.6 + lHandOpen * 0.4),
+        confidence: 0.68 * (0.5 + lHandOpen * 0.5) },
+      // 18: left_index — extends along wrist-elbow axis
+      { x: lWristX + fingerLen * Math.cos(lHandAngle) + fingerSpr * lHandOpen * Math.cos(lHandAngle + 0.3),
+        y: lWristY + fingerLen * Math.sin(lHandAngle) + fingerSpr * lHandOpen * Math.sin(lHandAngle + 0.3),
+        confidence: 0.72 * (0.5 + lHandOpen * 0.5) },
+      // 19: left_pinky — offset opposite thumb
+      { x: lWristX + fingerLen * 0.85 * Math.cos(lHandAngle - P.thumbAngle * 0.7),
+        y: lWristY + fingerLen * 0.85 * Math.sin(lHandAngle - P.thumbAngle * 0.7),
+        confidence: 0.60 * (0.5 + lHandOpen * 0.5) },
+
+      // 20: right_thumb
+      { x: rWristX + fingerLen * Math.cos(rHandAngle - P.thumbAngle) * (0.6 + rHandOpen * 0.4),
+        y: rWristY + fingerLen * Math.sin(rHandAngle - P.thumbAngle) * (0.6 + rHandOpen * 0.4),
+        confidence: 0.68 * (0.5 + rHandOpen * 0.5) },
+      // 21: right_index
+      { x: rWristX + fingerLen * Math.cos(rHandAngle) + fingerSpr * rHandOpen * Math.cos(rHandAngle - 0.3),
+        y: rWristY + fingerLen * Math.sin(rHandAngle) + fingerSpr * rHandOpen * Math.sin(rHandAngle - 0.3),
+        confidence: 0.72 * (0.5 + rHandOpen * 0.5) },
+      // 22: right_pinky
+      { x: rWristX + fingerLen * 0.85 * Math.cos(rHandAngle + P.thumbAngle * 0.7),
+        y: rWristY + fingerLen * 0.85 * Math.sin(rHandAngle + P.thumbAngle * 0.7),
+        confidence: 0.60 * (0.5 + rHandOpen * 0.5) },
+
+      // 23: left_foot_index (toe tip) — extends forward from ankle
+      { x: lAnkleX + P.ankleToToe * bodyH * 0.5,
+        y: ankleY + P.ankleToToe * bodyH * 0.3,
+        confidence: 0.65 },
+      // 24: right_foot_index
+      { x: rAnkleX + P.ankleToToe * bodyH * 0.5,
+        y: ankleY + P.ankleToToe * bodyH * 0.3,
+        confidence: 0.65 },
+
+      // 25: neck (midpoint between shoulders, slightly above)
+      { x: neckX, y: neckY, confidence: 0.93 },
     ];
 
     for (let i = 0; i < keypoints.length; i++) {

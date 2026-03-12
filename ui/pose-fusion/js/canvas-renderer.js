@@ -37,12 +37,18 @@ export class CanvasRenderer {
     const limbColor = color === 'amber' ? this.colors.csiLimb : this.colors.limb;
     const glowColor = color === 'amber' ? 'rgba(255,176,32,0.4)' : this.colors.jointGlow;
 
+    // Extended keypoint styling
+    const fingerColor = '#ff6ef0';    // Magenta for finger tips
+    const fingerGlow = 'rgba(255,110,240,0.4)';
+    const fingerLimb = 'rgba(255,110,240,0.5)';
+    const toeColor = '#6ef0ff';       // Cyan for toes
+    const neckColor = '#ffffff';       // White for neck
+
     ctx.clearRect(0, 0, width, height);
 
     if (!keypoints || keypoints.length === 0) return;
 
     // Draw limbs first (behind joints)
-    ctx.lineWidth = 3;
     ctx.lineCap = 'round';
 
     for (const [i, j] of SKELETON_CONNECTIONS) {
@@ -54,18 +60,22 @@ export class CanvasRenderer {
       const bx = kpB.x * width, by = kpB.y * height;
       const avgConf = (kpA.confidence + kpB.confidence) / 2;
 
+      // Is this a hand/finger connection? (indices 17-22)
+      const isFingerLink = i >= 17 && i <= 22 || j >= 17 && j <= 22;
+      const isToeLink = i >= 23 && i <= 24 || j >= 23 && j <= 24;
+
       // Glow
-      ctx.strokeStyle = this.colors.limbGlow;
-      ctx.lineWidth = 8;
-      ctx.globalAlpha = avgConf * 0.4;
+      ctx.strokeStyle = isFingerLink ? fingerLimb : this.colors.limbGlow;
+      ctx.lineWidth = isFingerLink ? 4 : 8;
+      ctx.globalAlpha = avgConf * (isFingerLink ? 0.3 : 0.4);
       ctx.beginPath();
       ctx.moveTo(ax, ay);
       ctx.lineTo(bx, by);
       ctx.stroke();
 
       // Main line
-      ctx.strokeStyle = limbColor;
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = isFingerLink ? fingerColor : isToeLink ? toeColor : limbColor;
+      ctx.lineWidth = isFingerLink || isToeLink ? 1.5 : 2.5;
       ctx.globalAlpha = avgConf;
       ctx.beginPath();
       ctx.moveTo(ax, ay);
@@ -75,43 +85,52 @@ export class CanvasRenderer {
 
     // Draw joints
     ctx.globalAlpha = 1;
-    for (const kp of keypoints) {
+    for (let idx = 0; idx < keypoints.length; idx++) {
+      const kp = keypoints[idx];
       if (!kp || kp.confidence < minConf) continue;
 
       const x = kp.x * width;
       const y = kp.y * height;
-      const r = 3 + kp.confidence * 3;
+      const isFinger = idx >= 17 && idx <= 22;
+      const isToe = idx >= 23 && idx <= 24;
+      const isNeck = idx === 25;
+      const r = isFinger ? 2 + kp.confidence * 2 : isToe ? 2 : 3 + kp.confidence * 3;
+      const jColor = isFinger ? fingerColor : isToe ? toeColor : isNeck ? neckColor : jointColor;
+      const gColor = isFinger ? fingerGlow : glowColor;
 
       // Glow
       ctx.beginPath();
-      ctx.arc(x, y, r + 4, 0, Math.PI * 2);
-      ctx.fillStyle = glowColor;
-      ctx.globalAlpha = kp.confidence * 0.6;
+      ctx.arc(x, y, r + (isFinger ? 3 : 4), 0, Math.PI * 2);
+      ctx.fillStyle = gColor;
+      ctx.globalAlpha = kp.confidence * (isFinger ? 0.5 : 0.6);
       ctx.fill();
 
       // Joint dot
       ctx.beginPath();
       ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = jointColor;
+      ctx.fillStyle = jColor;
       ctx.globalAlpha = kp.confidence;
       ctx.fill();
 
-      // White center
-      ctx.beginPath();
-      ctx.arc(x, y, r * 0.4, 0, Math.PI * 2);
-      ctx.fillStyle = '#fff';
-      ctx.globalAlpha = kp.confidence * 0.8;
-      ctx.fill();
+      // White center (body joints only)
+      if (!isFinger && !isToe) {
+        ctx.beginPath();
+        ctx.arc(x, y, r * 0.4, 0, Math.PI * 2);
+        ctx.fillStyle = '#fff';
+        ctx.globalAlpha = kp.confidence * 0.8;
+        ctx.fill();
+      }
     }
 
     ctx.globalAlpha = 1;
 
-    // Confidence label
+    // Confidence label + keypoint count
     if (opts.label) {
+      const visCount = keypoints.filter(kp => kp && kp.confidence >= minConf).length;
       ctx.font = '11px "JetBrains Mono", monospace';
       ctx.fillStyle = jointColor;
       ctx.globalAlpha = 0.8;
-      ctx.fillText(opts.label, 8, height - 8);
+      ctx.fillText(`${opts.label} · ${visCount} joints`, 8, height - 8);
       ctx.globalAlpha = 1;
     }
   }

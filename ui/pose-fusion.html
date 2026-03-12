@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WiFi-DensePose — Dual-Modal Pose Estimation</title>
-  <link rel="stylesheet" href="pose-fusion/css/style.css">
+  <link rel="stylesheet" href="pose-fusion/css/style.css?v=5">
 </head>
 <body>
 
@@ -78,7 +78,24 @@
       <div class="panel">
         <div class="panel-title">&#9670; CSI Amplitude Heatmap</div>
         <div class="csi-canvas-wrapper">
-          <canvas id="csi-canvas" width="320" height="120"></canvas>
+          <canvas id="csi-canvas" width="320" height="100"></canvas>
+        </div>
+      </div>
+
+      <!-- RSSI Signal Strength -->
+      <div class="panel">
+        <div class="panel-title">&#9670; RSSI Signal Strength</div>
+        <div class="rssi-row">
+          <div class="rssi-gauge">
+            <div class="rssi-bar-track">
+              <div class="rssi-bar-fill" id="rssi-bar" style="width:0%"></div>
+            </div>
+            <div class="rssi-values">
+              <span class="rssi-dbm" id="rssi-value">-- dBm</span>
+              <span class="rssi-quality" id="rssi-quality">--</span>
+            </div>
+          </div>
+          <canvas id="rssi-sparkline" width="160" height="32"></canvas>
         </div>
       </div>
 
@@ -86,7 +103,7 @@
       <div class="panel">
         <div class="panel-title">&#9670; Embedding Space (2D Projection)</div>
         <div class="embedding-canvas-wrapper">
-          <canvas id="embedding-canvas" width="320" height="140"></canvas>
+          <canvas id="embedding-canvas" width="320" height="100"></canvas>
         </div>
       </div>
 
@@ -155,6 +172,6 @@
 
   </div><!-- /main-grid -->
 
-  <script type="module" src="pose-fusion/js/main.js"></script>
+  <script type="module" src="pose-fusion/js/main.js?v=5"></script>
 </body>
 </html>

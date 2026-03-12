@@ -79,6 +79,9 @@ export class CsiSimulator {
    * (simulating through-wall sensing capability).
    */
   updatePersonState(presence, x, y, motion) {
+    // Don't override real CSI sensing with synthetic video-derived state
+    if (this.mode === 'live') return;
+
     if (presence > 0.1) {
       // Person detected in video — update CSI state directly
       this.personPresence = presence;

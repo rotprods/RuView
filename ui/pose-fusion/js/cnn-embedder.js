@@ -34,6 +34,8 @@ export class CnnEmbedder {
     this.wasmEmbedder = null;
     this.rvAttention = null;      // RuVector Multi-Head Attention (WASM)
     this.rvFlash = null;          // RuVector Flash Attention (WASM)
+    this.rvHyperbolic = null;     // RuVector Hyperbolic Attention (hierarchical body)
+    this.rvMoE = null;            // RuVector Mixture-of-Experts (body-region routing)
     this.rvModule = null;         // RuVector WASM module reference
     this.useRuVector = false;
 
@@ -82,9 +84,13 @@ export class CnnEmbedder {
       this.rvAttention = new mod.WasmMultiHeadAttention(16, 4);
       // Create Flash Attention for larger sequences
       this.rvFlash = new mod.WasmFlashAttention(16, 8);
+      // Hyperbolic Attention for hierarchical body-part modeling (Poincaré ball, curvature=-1)
+      this.rvHyperbolic = new mod.WasmHyperbolicAttention(16, -1.0);
+      // MoE: 3 experts (upper-body, lower-body, extremities), top-2 active
+      this.rvMoE = new mod.WasmMoEAttention(16, 3, 2);
       this.rvModule = mod;
       this.useRuVector = true;
-      console.log(`[CNN] RuVector Attention WASM v${mod.version()} loaded — Multi-Head + Flash Attention active`);
+      console.log(`[CNN] RuVector Attention WASM v${mod.version()} loaded — MHA + Flash + Hyperbolic + MoE active`);
       return true;
     } catch (e) {
       console.log('[CNN] RuVector Attention WASM not available:', e.message);
@@ -198,9 +204,11 @@ export class CnnEmbedder {
   }
 
   /**
-   * Extract embedding using RuVector Multi-Head Attention WASM.
-   * Treats conv feature map spatial positions as sequence tokens,
-   * applies self-attention, then projects to embedding dimension.
+   * Extract embedding using full RuVector attention pipeline:
+   * 1. Multi-Head Attention (global spatial reasoning)
+   * 2. Hyperbolic Attention (hierarchical body-part structure)
+   * 3. MoE Attention (body-region specialized experts)
+   * 4. Concatenate + project → final embedding
    */
   _extractWithAttention(convOut, numTokens, channels) {
     // Subsample spatial tokens for attention (keep it fast: max 64 tokens)
@@ -215,33 +223,62 @@ export class CnnEmbedder {
       tokens.push(token);
     }
 
-    // Use first token as query, all tokens as keys/values (self-attention)
-    // Average multiple query positions for robust embedding
     const numQueries = Math.min(4, tokens.length);
     const queryStride = Math.floor(tokens.length / numQueries);
-    const attended = new Float32Array(channels);
 
+    // === Stage 1: Multi-Head Attention (global spatial reasoning) ===
+    const mhaOut = new Float32Array(channels);
     for (let q = 0; q < numQueries; q++) {
       const queryToken = tokens[q * queryStride];
       try {
         const result = this.rvAttention.compute(queryToken, tokens, tokens);
-        for (let c = 0; c < channels; c++) {
-          attended[c] += result[c] / numQueries;
-        }
+        for (let c = 0; c < channels; c++) mhaOut[c] += result[c] / numQueries;
       } catch (_) {
-        // Fallback: just average the tokens
-        for (let c = 0; c < channels; c++) {
-          attended[c] += queryToken[c] / numQueries;
-        }
+        for (let c = 0; c < channels; c++) mhaOut[c] += queryToken[c] / numQueries;
       }
     }
 
-    // Project attended features → embeddingDim
+    // === Stage 2: Hyperbolic Attention (hierarchical body structure) ===
+    const hyOut = new Float32Array(channels);
+    if (this.rvHyperbolic) {
+      try {
+        // Use MHA output as query against spatial tokens — captures parent→child relationships
+        const result = this.rvHyperbolic.compute(mhaOut, tokens, tokens);
+        for (let c = 0; c < channels; c++) hyOut[c] = result[c];
+      } catch (_) {
+        hyOut.set(mhaOut);
+      }
+    } else {
+      hyOut.set(mhaOut);
+    }
+
+    // === Stage 3: MoE Attention (body-region experts) ===
+    const moeOut = new Float32Array(channels);
+    if (this.rvMoE) {
+      try {
+        // MoE routes tokens to specialized experts and combines
+        const result = this.rvMoE.compute(hyOut, tokens, tokens);
+        for (let c = 0; c < channels; c++) moeOut[c] = result[c];
+      } catch (_) {
+        moeOut.set(hyOut);
+      }
+    } else {
+      moeOut.set(hyOut);
+    }
+
+    // === Stage 4: Concatenate all three heads + project ===
+    // Blend: 40% MHA (global), 30% Hyperbolic (hierarchy), 30% MoE (regions)
+    const blended = new Float32Array(channels);
+    for (let c = 0; c < channels; c++) {
+      blended[c] = 0.4 * mhaOut[c] + 0.3 * hyOut[c] + 0.3 * moeOut[c];
+    }
+
+    // Project to embeddingDim
     const emb = new Float32Array(this.embeddingDim);
     for (let o = 0; o < this.embeddingDim; o++) {
       let sum = 0;
       for (let i = 0; i < channels; i++) {
-        sum += attended[i] * this.attnProjWeights[i * this.embeddingDim + o];
+        sum += blended[i] * this.attnProjWeights[i * this.embeddingDim + o];
       }
       emb[o] = sum;
     }
