@@ -96,9 +96,6 @@ jobs:
           curl --fail-with-body --silent --show-error https://staging.wifi-densepose.com/health >/dev/null
           curl --fail-with-body --silent --show-error https://staging.wifi-densepose.com/api/v1/info >/dev/null
 
-      - name: Staging integration tests
-        run: python -m pytest tests/integration/ --base-url=https://staging.wifi-densepose.com -v
-
       - name: Remove kubeconfig
         if: always()
         shell: bash
@@ -114,11 +111,13 @@ jobs:
           cat <<'EOF'
           Production deployment is intentionally disabled.
 
-          Re-enable only after all of the following exist and are independently reviewed:
+          Full code/integration qualification belongs to the exact-SHA build/release gate before any deployment runner receives Kubernetes credentials. This workflow only verifies the requested existing image and performs bounded staging rollout/smoke checks.
+
+          Re-enable production only after all of the following exist and are independently reviewed:
           - approved encrypted private backup destination;
           - tested restore procedure and non-sensitive backup receipt;
           - production environment reviewer policy;
-          - exact source/image identity contract;
+          - exact source/image identity contract and required pre-release tests;
           - no raw DB dump, kubeconfig or classified data in GitHub artifacts/caches/logs;
           - exact-head deployment/rollback tests;
           - GitHub Fortress bypass identity and rollback proof.
